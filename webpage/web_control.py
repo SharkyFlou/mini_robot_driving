@@ -11,7 +11,7 @@ USE_STATION_MODE: bool = False
 
 SSID: str = "Zilena-Robot"
 PASSWORD: str = "robot2026"
-DEFAULT_MOTOR_SPEED_PERCENT: int = 70
+DEFAULT_MOTOR_SPEED_PERCENT: int = 150
 
 MODE_LOADING = "loading"
 MODE_WAITING = "waiting"
