@@ -1,6 +1,6 @@
 """Central pin mapping for the Zilena robot hardware."""
 
-# RGB LED (PWM)
+# RGB LED (digital outputs)
 RGB_LED_RED_PIN = 21
 RGB_LED_GREEN_PIN = 11
 RGB_LED_BLUE_PIN = 10
@@ -25,3 +25,6 @@ ULTRASOUND_ECHO_PIN = 23
 
 # Music
 BUZZER_PIN = 5
+
+# Robot controls
+MUSIC_STOP_BUTTON_PIN = 2

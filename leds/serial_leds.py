@@ -2,7 +2,7 @@ from machine import Pin
 import neopixel
 from pins import SERIAL_LED_DATA_PIN
 
-class SeriallLeds:
+class SerialLeds:
     """Simple NeoPixel strip wrapper with range validation."""
 
     def __init__(self,

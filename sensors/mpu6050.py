@@ -540,10 +540,10 @@ class MPU6050:
         by the enabled FIFO sources, the known byte length of each enabled data block and the fixed order in the MPU6050 writes data into the FIFO.
 
         1.  Accelerometer data (6 bytes)
-        2.  Gyroscope X axis data (2 bytes)
-        3.  Gyroscope Y axis data (2 bytes)
-        4.  Gyroscope Z axis data (2 bytes)
-        5.  Temperature (2 bytes)
+        2.  Temperature (2 bytes)
+        3.  Gyroscope X axis data (2 bytes)
+        4.  Gyroscope Y axis data (2 bytes)
+        5.  Gyroscope Z axis data (2 bytes)
         Only the data from the enabled sources are stored into the FIFO however they are always stored in this order, i.e. the data from
         not enabled sources are skipped.
 
@@ -709,6 +709,23 @@ class MPU6050:
         """
         return value - 0x10000 if value & 0x8000 else value
 
+    @staticmethod
+    def __apply_mounting_correction(x_axis: float | None,
+                                    y_axis: float | None,
+                                    z_axis: float | None) -> tuple[float | None, float | None, float | None]:
+        """
+        Fix axes because of a physical mounting error.
+
+        The MPU6050 is mounted 90 degrees to the left, so the robot-frame
+        correction is:
+            X_corrected = Y_raw
+            Y_corrected = -X_raw
+            Z_corrected = Z_raw
+        """
+        if x_axis is None or y_axis is None:
+            return x_axis, y_axis, z_axis
+        return y_axis, -x_axis, z_axis
+
     def read_all_sensors(self) -> dict[str,float]:
         """
         Function reads the data from all sensors registers in the burst mode
@@ -741,6 +758,17 @@ class MPU6050:
                                                   "gy": self.__to_signed(gy) / self.__gyroscope_sensitivity,
                                                   "gz": self.__to_signed(gz) / self.__gyroscope_sensitivity,
                                                   "temp": self.__to_signed(temp) / 340.0 + 36.53}
+
+        data_sensors_readings["ax"], data_sensors_readings["ay"], data_sensors_readings["az"] = self.__apply_mounting_correction(
+            data_sensors_readings["ax"],
+            data_sensors_readings["ay"],
+            data_sensors_readings["az"]
+        )
+        data_sensors_readings["gx"], data_sensors_readings["gy"], data_sensors_readings["gz"] = self.__apply_mounting_correction(
+            data_sensors_readings["gx"],
+            data_sensors_readings["gy"],
+            data_sensors_readings["gz"]
+        )
 
         return data_sensors_readings
 
@@ -795,6 +823,17 @@ class MPU6050:
             data_sensors_readings["gy"] = self.__to_signed(self.__read_fifo_word()) / self.__gyroscope_sensitivity
         if self.__fifo_gyroscope_z_axis_enable:
             data_sensors_readings["gz"] = self.__to_signed(self.__read_fifo_word()) / self.__gyroscope_sensitivity
+
+        data_sensors_readings["ax"], data_sensors_readings["ay"], data_sensors_readings["az"] = self.__apply_mounting_correction(
+            data_sensors_readings["ax"],
+            data_sensors_readings["ay"],
+            data_sensors_readings["az"]
+        )
+        data_sensors_readings["gx"], data_sensors_readings["gy"], data_sensors_readings["gz"] = self.__apply_mounting_correction(
+            data_sensors_readings["gx"],
+            data_sensors_readings["gy"],
+            data_sensors_readings["gz"]
+        )
 
         return data_sensors_readings
 

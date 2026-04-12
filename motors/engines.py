@@ -35,11 +35,11 @@ class Engines:
         return value
 
     def move_right_forward(self, percent:int) -> None:
-        self.__engine_right_forward.duty_u16(self.__percent_to_duty(percent))
+        self.__engine_right_forward.duty_u16(self.__percent_to_duty(round(percent / 1.1)))
         self.__engine_right_backward.duty_u16(self.__percent_to_duty(0))
 
     def move_right_backward(self, percent:int) -> None:
-        self.__engine_right_backward.duty_u16(self.__percent_to_duty(percent))
+        self.__engine_right_backward.duty_u16(self.__percent_to_duty(round(percent / 1.1)))
         self.__engine_right_forward.duty_u16(self.__percent_to_duty(0))
 
     def move_left_forward(self, percent:int) -> None:

@@ -31,7 +31,7 @@ class Wifi:
             return
         self.__nic.connect(name,pwd)
         while True:
-            status: list[int] = self.__nic.status()
+            status: int = self.__nic.status()
             if status == network.STAT_GOT_IP:
                 print("The ESP32 has connected")
                 print(f"Network config : {self.__nic.ifconfig()}")

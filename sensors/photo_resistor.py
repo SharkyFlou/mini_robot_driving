@@ -11,8 +11,7 @@ class PhotoResistor:
 
     @staticmethod
     def get_voltage(raw_value: int) -> float:
-        one_percent: float = 3.3 / 100
-        voltage: int = int(raw_value * one_percent)
+        voltage: float = raw_value * 3.3 / 65535
         return voltage
 
     @staticmethod

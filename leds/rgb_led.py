@@ -1,11 +1,10 @@
 """Class handling the RGB LED diode."""
 
 from machine import Pin
-from machine import PWM
 from pins import RGB_LED_BLUE_PIN, RGB_LED_GREEN_PIN, RGB_LED_RED_PIN
 
 class RGBLed:
-    """RGB LED driver using three PWM channels."""
+    """RGB LED driver using three GPIO outputs."""
 
     def __init__(self,
                  pin_red: int = RGB_LED_RED_PIN,
@@ -20,23 +19,17 @@ class RGBLed:
 
         :return: None
         """
-        self.__pin_red_number: int = pin_red
-        self.__pin_green_number: int = pin_green
-        self.__pin_blue_number: int = pin_blue
-        self.__pin_red: PWM = PWM(Pin(pin_red), freq=100, duty_u16=0)
-        self.__pin_green: PWM = PWM(Pin(pin_green), freq=100, duty_u16=0)
-        self.__pin_blue: PWM = PWM(Pin(pin_blue), freq=100, duty_u16=0)
-        self.__max_intensity: int = 40
+        self.__pin_red: Pin = Pin(pin_red, Pin.OUT, value=0)
+        self.__pin_green: Pin = Pin(pin_green, Pin.OUT, value=0)
+        self.__pin_blue: Pin = Pin(pin_blue, Pin.OUT, value=0)
+        self.__max_intensity: int = 100
 
     @staticmethod
     def __calculate_intensity(intensity_percent: int) -> int:
-        one_percent: float = 65535 / 100
-        intensity: int = int(intensity_percent * one_percent)
-        if intensity > 65535:
-            intensity = 65535
-        elif intensity < 0:
-            intensity = 0
-        return intensity
+        return 1 if intensity_percent > 0 else 0
+
+    def __set_channel(self, channel: Pin, intensity_percent: int) -> None:
+        channel.value(self.__calculate_intensity(intensity_percent))
 
     def set_specific_colour(self,
                             intensity_red: int,
@@ -50,9 +43,9 @@ class RGBLed:
         :param intensity_blue: intensity of the blue LED int percentage
         :return:
         """
-        self.__pin_green.duty_u16(self.__calculate_intensity(intensity_green))
-        self.__pin_red.duty_u16(self.__calculate_intensity(intensity_red))
-        self.__pin_blue.duty_u16(self.__calculate_intensity(intensity_blue))
+        self.__set_channel(self.__pin_green, intensity_green)
+        self.__set_channel(self.__pin_red, intensity_red)
+        self.__set_channel(self.__pin_blue, intensity_blue)
 
     def set_red(self) -> None:
         """
@@ -60,9 +53,9 @@ class RGBLed:
 
         :return: None
         """
-        self.__pin_red.duty_u16(self.__calculate_intensity(self.__max_intensity))
-        self.__pin_green.duty_u16(self.__calculate_intensity(0))
-        self.__pin_blue.duty_u16(self.__calculate_intensity(0))
+        self.__set_channel(self.__pin_red, self.__max_intensity)
+        self.__set_channel(self.__pin_green, 0)
+        self.__set_channel(self.__pin_blue, 0)
 
     def set_green(self) -> None:
         """
@@ -70,9 +63,9 @@ class RGBLed:
 
         :return: None
         """
-        self.__pin_green.duty_u16(self.__calculate_intensity(self.__max_intensity))
-        self.__pin_red.duty_u16(self.__calculate_intensity(0))
-        self.__pin_blue.duty_u16(self.__calculate_intensity(0))
+        self.__set_channel(self.__pin_green, self.__max_intensity)
+        self.__set_channel(self.__pin_red, 0)
+        self.__set_channel(self.__pin_blue, 0)
 
     def set_blue(self) -> None:
         """
@@ -80,9 +73,9 @@ class RGBLed:
 
         :return: None
         """
-        self.__pin_green.duty_u16(self.__calculate_intensity(0))
-        self.__pin_red.duty_u16(self.__calculate_intensity(0))
-        self.__pin_blue.duty_u16(self.__calculate_intensity(self.__max_intensity))
+        self.__set_channel(self.__pin_green, 0)
+        self.__set_channel(self.__pin_red, 0)
+        self.__set_channel(self.__pin_blue, self.__max_intensity)
 
     def set_yellow(self) -> None:
         """
@@ -90,9 +83,9 @@ class RGBLed:
 
         :return: None
         """
-        self.__pin_green.duty_u16(self.__calculate_intensity(self.__max_intensity))
-        self.__pin_red.duty_u16(self.__calculate_intensity(self.__max_intensity))
-        self.__pin_blue.duty_u16(self.__calculate_intensity(0))
+        self.__set_channel(self.__pin_green, self.__max_intensity)
+        self.__set_channel(self.__pin_red, self.__max_intensity)
+        self.__set_channel(self.__pin_blue, 0)
 
     def set_purple(self) -> None:
         """
@@ -100,9 +93,9 @@ class RGBLed:
 
         :return: None
         """
-        self.__pin_green.duty_u16(self.__calculate_intensity(0))
-        self.__pin_red.duty_u16(self.__calculate_intensity(self.__max_intensity))
-        self.__pin_blue.duty_u16(self.__calculate_intensity(self.__max_intensity))
+        self.__set_channel(self.__pin_green, 0)
+        self.__set_channel(self.__pin_red, self.__max_intensity)
+        self.__set_channel(self.__pin_blue, self.__max_intensity)
 
     def set_cyan(self) -> None:
         """
@@ -110,9 +103,9 @@ class RGBLed:
 
         :return: None
         """
-        self.__pin_green.duty_u16(self.__calculate_intensity(self.__max_intensity))
-        self.__pin_red.duty_u16(self.__calculate_intensity(0))
-        self.__pin_blue.duty_u16(self.__calculate_intensity(self.__max_intensity))
+        self.__set_channel(self.__pin_green, self.__max_intensity)
+        self.__set_channel(self.__pin_red, 0)
+        self.__set_channel(self.__pin_blue, self.__max_intensity)
 
     def set_white(self) -> None:
         """
@@ -120,9 +113,9 @@ class RGBLed:
 
         :return: None
         """
-        self.__pin_green.duty_u16(self.__calculate_intensity(self.__max_intensity))
-        self.__pin_red.duty_u16(self.__calculate_intensity(self.__max_intensity))
-        self.__pin_blue.duty_u16(self.__calculate_intensity(self.__max_intensity))
+        self.__set_channel(self.__pin_green, self.__max_intensity)
+        self.__set_channel(self.__pin_red, self.__max_intensity)
+        self.__set_channel(self.__pin_blue, self.__max_intensity)
 
     def set_off(self) -> None:
         """
@@ -130,19 +123,11 @@ class RGBLed:
 
         :return: None
         """
-        self.__pin_green.duty_u16(self.__calculate_intensity(0))
-        self.__pin_red.duty_u16(self.__calculate_intensity(0))
-        self.__pin_blue.duty_u16(self.__calculate_intensity(0))
+        self.__set_channel(self.__pin_green, 0)
+        self.__set_channel(self.__pin_red, 0)
+        self.__set_channel(self.__pin_blue, 0)
 
     def release(self) -> None:
-        """Turn the LED off and free PWM channels."""
+        """Turn the LED off."""
         self.set_off()
-        self.__pin_red.deinit()
-        self.__pin_green.deinit()
-        self.__pin_blue.deinit()
-
-        # Force LED pins low after PWM deinit to prevent noise coupling.
-        Pin(self.__pin_red_number, Pin.OUT, value=0)
-        Pin(self.__pin_green_number, Pin.OUT, value=0)
-        Pin(self.__pin_blue_number, Pin.OUT, value=0)
 
