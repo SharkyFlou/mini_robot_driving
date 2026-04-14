@@ -716,15 +716,15 @@ class MPU6050:
         """
         Fix axes because of a physical mounting error.
 
-        The MPU6050 is mounted 90 degrees to the left, so the robot-frame
+        The MPU6050 is badly mounted to the robot-frame
         correction is:
-            X_corrected = Y_raw
-            Y_corrected = -X_raw
-            Z_corrected = Z_raw
+            X_corrected = X_raw
+            Y_corrected = Y_raw
+            Z_corrected = -Z_raw
         """
         if x_axis is None or y_axis is None:
             return x_axis, y_axis, z_axis
-        return y_axis, -x_axis, z_axis
+        return x_axis, y_axis, -z_axis
 
     def read_all_sensors(self) -> dict[str,float]:
         """

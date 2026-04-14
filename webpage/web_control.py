@@ -227,6 +227,38 @@ def _ensure_music_stop_task() -> None:
     music_stop_button_task_started = True
 
 
+_sensor_ultrasound = None
+_sensor_photo = None
+_sensor_mpu = None
+_sensors_ready: bool = False
+
+
+def _ensure_sensors() -> None:
+    """Lazily initialise all sensors on first use."""
+    global _sensor_ultrasound, _sensor_photo, _sensor_mpu, _sensors_ready
+    if _sensors_ready:
+        return
+    _sensors_ready = True
+    try:
+        from sensors.ultrasound import HCSR04Nonblocking
+        _sensor_ultrasound = HCSR04Nonblocking()
+    except Exception as exc:
+        print("Ultrasound init failed:", exc)
+    try:
+        from sensors.photo_resistor import PhotoResistor
+        _sensor_photo = PhotoResistor()
+    except Exception as exc:
+        print("PhotoResistor init failed:", exc)
+    try:
+        from sensors.mpu6050 import MPU6050
+        from machine import SoftI2C, Pin
+        i2c = display.i2c if display is not None else SoftI2C(scl=Pin(7), sda=Pin(6))
+        _sensor_mpu = MPU6050(i2c)
+    except Exception as exc:
+        print("MPU6050 init failed:", exc)
+    gc.collect()
+
+
 def apply_led_state(led_state: str) -> None:
     """Apply one named serial LED strip color preset."""
     serial_leds = hardware["serial_leds"]
@@ -397,11 +429,24 @@ def render_webpage():
     select { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 6px; border: 1px solid #cbd5e1; border-radius: 8px; }
     input[type=text] { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 6px; border: 1px solid #cbd5e1; border-radius: 8px; }
     .send-screen { background: #0f766e; width: 100%; margin-top: 10px; }
+    .tab-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+    .tab-btn { flex: 1; background: #e2e8f0; color: #1f2937; border-radius: 8px; padding: 10px; font-weight: bold; cursor: pointer; border: none; }
+    .tab-btn.active { background: #2563eb; color: #fff; }
+    .sensor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+    .sensor-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; }
+    .sensor-label { font-size: 12px; color: #64748b; margin-bottom: 4px; }
+    .sensor-value { font-size: 20px; font-weight: bold; color: #1e40af; }
+    .sensor-unit { font-size: 12px; color: #94a3b8; }
   </style>
 </head>
 <body>
   <div class=\"card\">
     <h1>Zilena Robot Control</h1>
+    <div class=\"tab-bar\">
+      <button class=\"tab-btn active\" id=\"tab-controls\" onclick=\"showTab('controls')\">Controls</button>
+      <button class=\"tab-btn\" id=\"tab-sensors\" onclick=\"showTab('sensors')\">Sensors</button>
+    </div>
+    <div id=\"pane-controls\">
     <p class=\"state\">LEDs: """
     yield state["led"]
     yield """</p>
@@ -486,6 +531,66 @@ def render_webpage():
       <input type=\"text\" name=\"line3\" maxlength=\"16\" placeholder=\"Line 3\">
       <button class=\"send-screen\" type=\"submit\">Send to screen</button>
     </form>
+    </div>
+    <div id=\"pane-sensors\" style=\"display:none\">
+      <div class=\"sensor-grid\">
+        <div class=\"sensor-card\">
+          <div class=\"sensor-label\">Distance</div>
+          <div class=\"sensor-value\" id=\"s-dist\">--</div>
+          <div class=\"sensor-unit\">cm</div>
+        </div>
+        <div class=\"sensor-card\">
+          <div class=\"sensor-label\">Light</div>
+          <div class=\"sensor-value\" id=\"s-light-pct\">--</div>
+          <div class=\"sensor-unit\">%</div>
+        </div>
+        <div class=\"sensor-card\">
+          <div class=\"sensor-label\">Light voltage</div>
+          <div class=\"sensor-value\" id=\"s-light-v\">--</div>
+          <div class=\"sensor-unit\">V</div>
+        </div>
+        <div class=\"sensor-card\">
+          <div class=\"sensor-label\">Light raw</div>
+          <div class=\"sensor-value\" id=\"s-light-raw\">--</div>
+          <div class=\"sensor-unit\">ADC</div>
+        </div>
+        <div class=\"sensor-card\">
+          <div class=\"sensor-label\">Accel X</div>
+          <div class=\"sensor-value\" id=\"s-ax\">--</div>
+          <div class=\"sensor-unit\">g</div>
+        </div>
+        <div class=\"sensor-card\">
+          <div class=\"sensor-label\">Accel Y</div>
+          <div class=\"sensor-value\" id=\"s-ay\">--</div>
+          <div class=\"sensor-unit\">g</div>
+        </div>
+        <div class=\"sensor-card\">
+          <div class=\"sensor-label\">Accel Z</div>
+          <div class=\"sensor-value\" id=\"s-az\">--</div>
+          <div class=\"sensor-unit\">g</div>
+        </div>
+        <div class=\"sensor-card\">
+          <div class=\"sensor-label\">Gyro X</div>
+          <div class=\"sensor-value\" id=\"s-gx\">--</div>
+          <div class=\"sensor-unit\">&deg;/s</div>
+        </div>
+        <div class=\"sensor-card\">
+          <div class=\"sensor-label\">Gyro Y</div>
+          <div class=\"sensor-value\" id=\"s-gy\">--</div>
+          <div class=\"sensor-unit\">&deg;/s</div>
+        </div>
+        <div class=\"sensor-card\">
+          <div class=\"sensor-label\">Gyro Z</div>
+          <div class=\"sensor-value\" id=\"s-gz\">--</div>
+          <div class=\"sensor-unit\">&deg;/s</div>
+        </div>
+        <div class=\"sensor-card\" style=\"grid-column: span 2\">
+          <div class=\"sensor-label\">Temperature (MPU6050)</div>
+          <div class=\"sensor-value\" id=\"s-temp\">--</div>
+          <div class=\"sensor-unit\">&deg;C</div>
+        </div>
+      </div>
+    </div>
   </div>
 <script>
     (function() {
@@ -603,6 +708,48 @@ def render_webpage():
         base.addEventListener('pointercancel', stopDragging);
         base.addEventListener('lostpointercapture', stopDragging);
     })();
+
+    function showTab(name) {
+        document.getElementById('pane-controls').style.display = name === 'controls' ? '' : 'none';
+        document.getElementById('pane-sensors').style.display = name === 'sensors' ? '' : 'none';
+        document.getElementById('tab-controls').className = 'tab-btn' + (name === 'controls' ? ' active' : '');
+        document.getElementById('tab-sensors').className = 'tab-btn' + (name === 'sensors' ? ' active' : '');
+        if (name === 'sensors') { startSensors(); } else { stopSensors(); }
+    }
+
+    var _sensorTimer = null;
+
+    function startSensors() {
+        if (_sensorTimer !== null) { return; }
+        fetchSensors();
+        _sensorTimer = setInterval(fetchSensors, 800);
+    }
+
+    function stopSensors() {
+        if (_sensorTimer !== null) { clearInterval(_sensorTimer); _sensorTimer = null; }
+    }
+
+    function setSensor(id, value, decimals) {
+        var el = document.getElementById(id);
+        if (!el) { return; }
+        el.textContent = (value === null || value === undefined) ? 'N/A' : (typeof value === 'number' ? value.toFixed(decimals) : String(value));
+    }
+
+    function fetchSensors() {
+        fetch('/api/sensors').then(function(r) { return r.json(); }).then(function(d) {
+            setSensor('s-dist', d.distance_cm, 1);
+            setSensor('s-light-pct', d.light_percent, 0);
+            setSensor('s-light-v', d.light_voltage, 2);
+            setSensor('s-light-raw', d.light_raw, 0);
+            setSensor('s-ax', d.accel_x_g, 3);
+            setSensor('s-ay', d.accel_y_g, 3);
+            setSensor('s-az', d.accel_z_g, 3);
+            setSensor('s-gx', d.gyro_x_dps, 1);
+            setSensor('s-gy', d.gyro_y_dps, 1);
+            setSensor('s-gz', d.gyro_z_dps, 1);
+            setSensor('s-temp', d.temp_c, 1);
+        }).catch(function() {});
+    }
 </script>
 </body>
 </html>
@@ -682,6 +829,69 @@ async def api_drive(request):
 
     apply_motor_vector(x_percent, y_percent)
     return "ok"
+
+
+@app.route("/api/sensors")
+async def api_sensors(_request):
+    """Return a JSON snapshot of all available sensors."""
+    _ensure_sensors()
+
+    dist_cm = None
+    if _sensor_ultrasound is not None:
+        try:
+            _sensor_ultrasound.reset_flag()
+            _sensor_ultrasound.start_measurement()
+        except Exception:
+            pass
+
+    light_raw = light_v = light_pct = None
+    if _sensor_photo is not None:
+        try:
+            result = _sensor_photo.measure()
+            light_raw = result[0]
+            light_v = result[1]
+            light_pct = result[2]
+        except Exception:
+            pass
+
+    ax = ay = az = gx = gy = gz = temp_c = None
+    if _sensor_mpu is not None:
+        try:
+            d = _sensor_mpu.read_all_sensors()
+            ax = d["ax"]; ay = d["ay"]; az = d["az"]
+            gx = d["gx"]; gy = d["gy"]; gz = d["gz"]
+            temp_c = d["temp"]
+        except Exception:
+            pass
+
+    if _sensor_ultrasound is not None:
+        for _ in range(4):
+            await _async_sleep_ms(10)
+            if _sensor_ultrasound.get_flag():
+                break
+        if _sensor_ultrasound.get_flag():
+            raw_dist = _sensor_ultrasound.return_distance_cm()
+            if raw_dist >= 0:
+                dist_cm = raw_dist
+
+    def _r(v, n):
+        return round(v, n) if v is not None else None
+
+    import ujson
+    payload = ujson.dumps({
+        "distance_cm": _r(dist_cm, 1),
+        "light_percent": _r(light_pct, 0),
+        "light_voltage": _r(light_v, 2),
+        "light_raw": light_raw,
+        "accel_x_g": _r(ax, 3),
+        "accel_y_g": _r(ay, 3),
+        "accel_z_g": _r(az, 3),
+        "gyro_x_dps": _r(gx, 1),
+        "gyro_y_dps": _r(gy, 1),
+        "gyro_z_dps": _r(gz, 1),
+        "temp_c": _r(temp_c, 1),
+    })
+    return Response(payload, headers={"Content-Type": "application/json"})
 
 
 @app.route("/set_max_speed", methods=["POST"])
