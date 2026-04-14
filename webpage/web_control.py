@@ -88,13 +88,13 @@ def _flash_mode_indicator(mode: str) -> None:
         rgb_led.set_off()
 
 
-def _speed_to_percent(speed_value: int) -> int:
-    speed_percent: int = (speed_value * 100) // 400
-    if speed_percent < 1:
+def _speed_to_permille(speed_value: int) -> int:
+    permille: int = (speed_value * 1000) // 400
+    if permille < 1:
         return 1
-    if speed_percent > 100:
-        return 100
-    return speed_percent
+    if permille > 1000:
+        return 1000
+    return permille
 
 
 def _clamp_speed(speed_value: int) -> int:
@@ -335,9 +335,9 @@ def apply_motor_vector(x_percent: int, y_percent: int) -> None:
     left = left / scale
     right = right / scale
 
-    max_speed_percent: int = _speed_to_percent(int(state["max_speed"]))
-    left_power: int = int(abs(left) * max_speed_percent)
-    right_power: int = int(abs(right) * max_speed_percent)
+    max_speed_permille: int = _speed_to_permille(int(state["max_speed"]))
+    left_power: int = int(abs(left) * max_speed_permille)
+    right_power: int = int(abs(right) * max_speed_permille)
 
     if left_power < 1 and abs(left) > deadzone:
         left_power = 1
@@ -443,40 +443,20 @@ def render_webpage():
   <div class=\"card\">
     <h1>Zilena Robot Control</h1>
     <div class=\"tab-bar\">
-      <button class=\"tab-btn active\" id=\"tab-controls\" onclick=\"showTab('controls')\">Controls</button>
+      <button class=\"tab-btn active\" id=\"tab-motors\" onclick=\"showTab('motors')\">Motors</button>
+      <button class=\"tab-btn\" id=\"tab-misc\" onclick=\"showTab('misc')\">Misc</button>
       <button class=\"tab-btn\" id=\"tab-sensors\" onclick=\"showTab('sensors')\">Sensors</button>
     </div>
-    <div id=\"pane-controls\">
-    <p class=\"state\">LEDs: """
-    yield state["led"]
-    yield """</p>
+    <div id=\"pane-motors\">
     <p class=\"state\">Motors: """
     yield state["motor"]
     yield """</p>
     <p class=\"state\">Max speed: """
     yield state["max_speed"]
     yield """</p>
-    <p class=\"state\">Song: """
-    yield state["song"]
-    yield """</p>
-    <p class=\"state\">Screen: """
-    yield state["screen"]
-    yield """</p>
     <p class=\"state\">Mode: """
     yield state["mode"]
     yield """</p>
-
-    <p class=\"section-title\">Serial LEDs control</p>
-    <div class=\"grid\">
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"off\"><button class=\"off\" type=\"submit\">Off</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"white\"><button class=\"white\" type=\"submit\">White</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"red\"><button class=\"red\" type=\"submit\">Red</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"green\"><button class=\"green\" type=\"submit\">Green</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"blue\"><button class=\"blue\" type=\"submit\">Blue</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"yellow\"><button class=\"yellow\" type=\"submit\">Yellow</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"purple\"><button class=\"purple\" type=\"submit\">Purple</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"cyan\"><button class=\"cyan\" type=\"submit\">Cyan</button></form>
-    </div>
 
     <p class=\"section-title\">Motors control</p>
         <div class=\"motor-wrap\">
@@ -508,6 +488,29 @@ def render_webpage():
     <form action=\"/stop_motors\" method=\"post\">
       <button class=\"danger\" type=\"submit\">Emergency stop</button>
     </form>
+    </div>
+    <div id=\"pane-misc\" style=\"display:none\">
+    <p class=\"state\">LEDs: """
+    yield state["led"]
+    yield """</p>
+    <p class=\"state\">Song: """
+    yield state["song"]
+    yield """</p>
+    <p class=\"state\">Screen: """
+    yield state["screen"]
+    yield """</p>
+
+    <p class=\"section-title\">Serial LEDs control</p>
+    <div class=\"grid\">
+      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"off\"><button class=\"off\" type=\"submit\">Off</button></form>
+      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"white\"><button class=\"white\" type=\"submit\">White</button></form>
+      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"red\"><button class=\"red\" type=\"submit\">Red</button></form>
+      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"green\"><button class=\"green\" type=\"submit\">Green</button></form>
+      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"blue\"><button class=\"blue\" type=\"submit\">Blue</button></form>
+      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"yellow\"><button class=\"yellow\" type=\"submit\">Yellow</button></form>
+      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"purple\"><button class=\"purple\" type=\"submit\">Purple</button></form>
+      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"cyan\"><button class=\"cyan\" type=\"submit\">Cyan</button></form>
+    </div>
 
         <p class=\"section-title\">Music control</p>
         <form action=\"/play_song\" method=\"post\">
@@ -710,12 +713,14 @@ def render_webpage():
     })();
 
     function showTab(name) {
-        document.getElementById('pane-controls').style.display = name === 'controls' ? '' : 'none';
-        document.getElementById('pane-sensors').style.display = name === 'sensors' ? '' : 'none';
-        document.getElementById('tab-controls').className = 'tab-btn' + (name === 'controls' ? ' active' : '');
-        document.getElementById('tab-sensors').className = 'tab-btn' + (name === 'sensors' ? ' active' : '');
+        ['motors', 'misc', 'sensors'].forEach(function(t) {
+            document.getElementById('pane-' + t).style.display = name === t ? '' : 'none';
+            document.getElementById('tab-' + t).className = 'tab-btn' + (name === t ? ' active' : '');
+        });
         if (name === 'sensors') { startSensors(); } else { stopSensors(); }
+        try { localStorage.setItem('active-tab', name); } catch(_) {}
     }
+    (function() { var t = localStorage.getItem('active-tab'); if (t) { showTab(t); } })();
 
     var _sensorTimer = null;
 
