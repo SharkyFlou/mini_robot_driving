@@ -10,13 +10,13 @@ from music.song_titles import song_titles
 from music.play import _async_sleep_ms, is_song_playing, playsong_async, set_volume, stop_song
 from pins import MUSIC_STOP_BUTTON_PIN
 from screen.oled import OLED
+import os
+import network
+import machine as _machine
 from webpage.microdot import Microdot, Response
-from webpage.wifi import Wifi
+from webpage.wifi_config import save_credentials, load_credentials, delete_credentials
 
-USE_STATION_MODE: bool = False
-
-SSID: str = "Brrrr-Robot"
-PASSWORD: str = "12345678"
+SETUP_AP_SSID: str = "Robot_Charly"
 DEFAULT_MAX_SPEED: int = 220
 
 MODE_LOADING = "loading"
@@ -45,6 +45,10 @@ state: dict[str, str] = {
     "max_speed": str(DEFAULT_MAX_SPEED),
     "song": "none",
 }
+
+WIFI_MODE: str = "setup"
+WIFI_AP_PASSWORD: str = ""
+WIFI_STA_IP: str = ""
 
 rgb_led = RGBLed()
 
@@ -113,16 +117,91 @@ def set_mode(mode: str) -> None:
     _flash_mode_indicator(mode)
 
 
-set_mode(MODE_LOADING)
-screen_status("Boot", "Creating WiFi", SSID)
-wifi: Wifi = Wifi(USE_STATION_MODE)
+def _gen_ap_password() -> str:
+    """Generate a random 12-character alphanumeric password using hardware entropy."""
+    chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    try:
+        raw = os.urandom(12)
+        return ''.join(chars[b % len(chars)] for b in raw)
+    except Exception:
+        import random
+        return ''.join(random.choice(chars) for _ in range(12))
 
-if USE_STATION_MODE:
-    wifi.connect_to_wifi(SSID, PASSWORD)
-    screen_status("WiFi ready", "STA mode", SSID)
-else:
-    wifi.create_wifi(SSID, PASSWORD)
-    screen_status("WiFi ready", "AP mode", SSID)
+
+def _start_ap(ssid: str, password: str) -> None:
+    """Activate the WiFi Access Point."""
+    ap = network.WLAN(network.AP_IF)
+    ap.active(True)
+    if password:
+        ap.config(essid=ssid, authmode=network.AUTH_WPA_PSK, password=password)
+    else:
+        ap.config(essid=ssid, authmode=network.AUTH_OPEN)
+
+
+def _try_sta_connect(ssid: str, password: str, timeout: int = 15) -> tuple:
+    """Blocking STA connection attempt (for use before the event loop starts).
+
+    Returns (True, ip_address) on success or (False, '') on failure.
+    """
+    import time
+    sta = network.WLAN(network.STA_IF)
+    sta.active(True)
+    sta.connect(ssid, password)
+    for _ in range(timeout * 2):
+        status = sta.status()
+        if status == network.STAT_GOT_IP:
+            return True, sta.ifconfig()[0]
+        if status in (network.STAT_WRONG_PASSWORD, network.STAT_NO_AP_FOUND, network.STAT_CONNECT_FAIL):
+            sta.active(False)
+            return False, ''
+        time.sleep(0.5)
+    sta.active(False)
+    return False, ''
+
+
+async def _try_sta_connect_async(ssid: str, password: str, timeout: int = 15) -> tuple:
+    """Async STA connection attempt (for use inside the event loop).
+
+    Returns (True, ip_address) on success or (False, '') on failure.
+    """
+    sta = network.WLAN(network.STA_IF)
+    sta.active(True)
+    sta.connect(ssid, password)
+    for _ in range(timeout * 5):
+        status = sta.status()
+        if status == network.STAT_GOT_IP:
+            return True, sta.ifconfig()[0]
+        if status in (network.STAT_WRONG_PASSWORD, network.STAT_NO_AP_FOUND, network.STAT_CONNECT_FAIL):
+            sta.active(False)
+            return False, ''
+        await asyncio.sleep_ms(200)
+    sta.active(False)
+    return False, ''
+
+
+async def _reset_after_delay_ms(ms: int) -> None:
+    """Reboot the device after a delay to allow the HTTP response to flush."""
+    await asyncio.sleep_ms(ms)
+    _machine.reset()
+
+
+set_mode(MODE_LOADING)
+
+_saved_ssid, _saved_pwd = load_credentials()
+if _saved_ssid:
+    screen_status("Connexion", _saved_ssid[:16], "...")
+    _sta_ok, _sta_ip = _try_sta_connect(_saved_ssid, _saved_pwd)
+    if _sta_ok:
+        WIFI_MODE = "station"
+        WIFI_STA_IP = _sta_ip
+        screen_status("Connecte!", _sta_ip, "Port 80")
+    else:
+        delete_credentials()
+
+if WIFI_MODE == "setup":
+    WIFI_AP_PASSWORD = _gen_ap_password()
+    _start_ap(SETUP_AP_SSID, WIFI_AP_PASSWORD)
+    screen_status(SETUP_AP_SSID, WIFI_AP_PASSWORD, "192.168.4.1")
 
 app: Microdot = Microdot()
 Response.default_content_type = "text/html"
@@ -359,6 +438,81 @@ def apply_motor_vector(x_percent: int, y_percent: int) -> None:
         motors.coast_right()
 
     state["motor"] = "x=" + str(x_percent) + " y=" + str(y_percent)
+
+
+def render_setup_page(error: str = ""):
+    yield """<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Robot Charly - Configuration WiFi</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f7fb; margin: 0; padding: 40px 20px; color: #1f2937; }
+    .card { max-width: 400px; margin: 0 auto; background: #fff; padding: 24px; border-radius: 12px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
+    h1 { margin-top: 0; font-size: 22px; color: #1e3a8a; }
+    p { color: #475569; font-size: 14px; }
+    label { display: block; margin: 14px 0 4px; font-weight: bold; font-size: 14px; }
+    input { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 15px; }
+    button { margin-top: 20px; width: 100%; padding: 12px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
+    .error { color: #dc2626; background: #fef2f2; border: 1px solid #fca5a5; border-radius: 8px; padding: 10px; margin-bottom: 12px; font-size: 14px; }
+    .hint { font-size: 12px; color: #94a3b8; margin-top: 20px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Configuration WiFi</h1>
+    <p>Connectez le robot a votre reseau WiFi pour acceder a Internet.</p>"""
+    if error:
+        yield '\n    <div class="error">'
+        yield error
+        yield '</div>'
+    yield """
+    <form action="/wifi_setup" method="post">
+      <label for="ssid">Nom du WiFi (SSID)</label>
+      <input type="text" id="ssid" name="ssid" placeholder="MonWiFi" required autocomplete="off">
+      <label for="password">Mot de passe</label>
+      <input type="password" id="password" name="password" placeholder="Mot de passe" autocomplete="off">
+      <button type="submit">Valider</button>
+    </form>
+    <p class="hint">Robot_Charly &bull; 192.168.4.1</p>
+  </div>
+</body>
+</html>"""
+
+
+def render_connecting_page(ip: str):
+    yield """<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="8;url=http://"""
+    yield ip
+    yield """/">
+  <title>Connexion reussie</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f0fdf4; margin: 0; padding: 40px 20px; text-align: center; color: #14532d; }
+    .card { max-width: 400px; margin: 0 auto; background: #fff; padding: 28px; border-radius: 12px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
+    h1 { color: #16a34a; margin-top: 0; }
+    .ip { font-size: 22px; font-weight: bold; color: #1e40af; margin: 16px 0; }
+    p { color: #475569; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Connexion reussie!</h1>
+    <p>Le robot est connecte au WiFi. Il redemarrage...</p>
+    <div class="ip">"""
+    yield ip
+    yield """</div>
+    <p>Nouvelle adresse disponible dans quelques secondes.</p>
+    <p>Redirection automatique vers <strong>http://"""
+    yield ip
+    yield """/</strong></p>
+  </div>
+</body>
+</html>"""
 
 
 def render_webpage():
@@ -763,11 +917,34 @@ def render_webpage():
 
 @app.route("/")
 async def index(_request):
+    if WIFI_MODE == "setup":
+        return Response(render_setup_page())
     _ensure_music_stop_task()
     ensure_leds_mode()
     set_mode(MODE_WAITING)
     screen_status("Web UI", "Connected", "")
     return Response(render_webpage())
+
+
+@app.route("/wifi_setup", methods=["POST"])
+async def wifi_setup_route(request):
+    ssid: str = (request.form.get("ssid") or "").strip()
+    password: str = (request.form.get("password") or "").strip()
+
+    if not ssid:
+        return Response(render_setup_page("Le nom du WiFi est requis."))
+
+    screen_status("Connexion...", ssid[:16], "")
+    success, ip = await _try_sta_connect_async(ssid, password)
+
+    if success:
+        save_credentials(ssid, password)
+        screen_status("Connecte!", ip, "Redemarrage...")
+        asyncio.create_task(_reset_after_delay_ms(1500))
+        return Response(render_connecting_page(ip))
+
+    screen_status(SETUP_AP_SSID, WIFI_AP_PASSWORD, "192.168.4.1")
+    return Response(render_setup_page("Echec de connexion. Verifiez le SSID et le mot de passe."))
 
 
 @app.route("/set_led", methods=["POST"])
