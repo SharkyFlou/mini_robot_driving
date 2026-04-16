@@ -14,9 +14,9 @@ import os
 import network
 import machine as _machine
 from webpage.microdot import Microdot, Response
-from webpage.wifi_config import save_credentials, load_credentials, delete_credentials
+from webpage.wifi_config import add_credential, load_all
 
-SETUP_AP_SSID: str = "Robot_Charly"
+SETUP_AP_SSID: str = "Rob_Charly"
 DEFAULT_MAX_SPEED: int = 220
 
 MODE_LOADING = "loading"
@@ -118,14 +118,14 @@ def set_mode(mode: str) -> None:
 
 
 def _gen_ap_password() -> str:
-    """Generate a random 12-character alphanumeric password using hardware entropy."""
-    chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    """Generate a random 8-character lowercase alphanumeric password using hardware entropy."""
+    chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
     try:
-        raw = os.urandom(12)
+        raw = os.urandom(8)
         return ''.join(chars[b % len(chars)] for b in raw)
     except Exception:
         import random
-        return ''.join(random.choice(chars) for _ in range(12))
+        return ''.join(random.choice(chars) for _ in range(8))
 
 
 def _start_ap(ssid: str, password: str) -> None:
@@ -145,7 +145,10 @@ def _try_sta_connect(ssid: str, password: str, timeout: int = 15) -> tuple:
     """
     import time
     sta = network.WLAN(network.STA_IF)
+    was_active = sta.active()
     sta.active(True)
+    if not was_active:
+        time.sleep(0.3)  # let radio settle after first activation
     sta.connect(ssid, password)
     for _ in range(timeout * 2):
         status = sta.status()
@@ -185,23 +188,74 @@ async def _reset_after_delay_ms(ms: int) -> None:
     _machine.reset()
 
 
+def _scan_wifi() -> list:
+    """Scan for WiFi networks. Returns list of (ssid, rssi) sorted by signal strength (strongest first)."""
+    import time
+    sta = network.WLAN(network.STA_IF)
+    was_active = sta.active()
+    sta.active(True)
+    if not was_active:
+        time.sleep(0.3)  # let radio settle after first activation
+    results = []
+    try:
+        entries = sta.scan()
+        seen = set()
+        for entry in entries:
+            ssid = entry[0]
+            if isinstance(ssid, bytes):
+                try:
+                    ssid = ssid.decode('utf-8')
+                except Exception:
+                    ssid = ssid.decode('latin-1')
+            ssid = ssid.strip()
+            rssi = entry[3]
+            if ssid and ssid not in seen:
+                seen.add(ssid)
+                results.append((ssid, rssi))
+        results.sort(key=lambda x: -x[1])
+    except Exception as exc:
+        print("WiFi scan error:", exc)
+    return results
+
+
 set_mode(MODE_LOADING)
 
-_saved_ssid, _saved_pwd = load_credentials()
-if _saved_ssid:
-    screen_status("Connexion", _saved_ssid[:16], "...")
-    _sta_ok, _sta_ip = _try_sta_connect(_saved_ssid, _saved_pwd)
-    if _sta_ok:
-        WIFI_MODE = "station"
-        WIFI_STA_IP = _sta_ip
-        screen_status("Connecte!", _sta_ip, "Port 80")
-    else:
-        delete_credentials()
+# Always start with AP disabled. This prevents any stale or default AP from
+# being reachable before we have decided which mode to use. In station mode
+# the AP will never be re-enabled, so the robot is only reachable via the
+# external WiFi. In setup mode, _start_ap() will re-enable it deliberately.
+network.WLAN(network.AP_IF).active(False)
+
+_all_creds = load_all()
+if _all_creds:
+    # Scan to rank attempts by signal strength, but always try ALL saved
+    # credentials — the scan can miss networks right after a reset (radio timing).
+    screen_status("Scanning", "WiFi...", "")
+    _nearby = _scan_wifi()
+    _nearby_set = set(s for s, _ in _nearby)
+    _nearby_order = [s for s, _ in _nearby if s in _all_creds]
+
+    # Attempt order: scan-visible known networks first (full timeout),
+    # then saved-but-not-visible as fallback (short probe timeout).
+    _attempt_order = _nearby_order[:]
+    for _s in _all_creds:
+        if _s not in _nearby_set:
+            _attempt_order.append(_s)
+
+    for _ssid in _attempt_order:
+        _timeout = 12 if _ssid in _nearby_set else 5
+        screen_status("Connecting", _ssid[:16], "...")
+        _sta_ok, _sta_ip = _try_sta_connect(_ssid, _all_creds[_ssid], _timeout)
+        if _sta_ok:
+            WIFI_MODE = "station"
+            WIFI_STA_IP = _sta_ip
+            screen_status("Connected!", _sta_ip, "Port 80")
+            break
 
 if WIFI_MODE == "setup":
     WIFI_AP_PASSWORD = _gen_ap_password()
     _start_ap(SETUP_AP_SSID, WIFI_AP_PASSWORD)
-    screen_status(SETUP_AP_SSID, WIFI_AP_PASSWORD, "192.168.4.1")
+    screen_status(f"WiFi:{SETUP_AP_SSID}", WIFI_AP_PASSWORD, "192.168.4.1")
 
 app: Microdot = Microdot()
 Response.default_content_type = "text/html"
@@ -442,55 +496,100 @@ def apply_motor_vector(x_percent: int, y_percent: int) -> None:
 
 def render_setup_page(error: str = ""):
     yield """<!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Robot Charly - Configuration WiFi</title>
+  <title>Robot Charly - WiFi Setup</title>
   <style>
     body { font-family: Arial, sans-serif; background: #f4f7fb; margin: 0; padding: 40px 20px; color: #1f2937; }
-    .card { max-width: 400px; margin: 0 auto; background: #fff; padding: 24px; border-radius: 12px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
+    .card { max-width: 420px; margin: 0 auto; background: #fff; padding: 24px; border-radius: 12px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
     h1 { margin-top: 0; font-size: 22px; color: #1e3a8a; }
     p { color: #475569; font-size: 14px; }
-    label { display: block; margin: 14px 0 4px; font-weight: bold; font-size: 14px; }
-    input { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 15px; }
-    button { margin-top: 20px; width: 100%; padding: 12px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
-    .error { color: #dc2626; background: #fef2f2; border: 1px solid #fca5a5; border-radius: 8px; padding: 10px; margin-bottom: 12px; font-size: 14px; }
+    .section-label { display: block; margin: 16px 0 6px; font-weight: bold; font-size: 12px; color: #374151; text-transform: uppercase; letter-spacing: .05em; }
+    .scan-row { display: flex; gap: 8px; }
+    select { flex: 1; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; background: #fff; min-width: 0; }
+    .btn-refresh { padding: 10px 14px; background: #475569; color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: bold; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+    .btn-refresh:disabled { opacity: .5; cursor: default; }
+    .divider { border: none; border-top: 1px solid #e2e8f0; margin: 18px 0 4px; }
+    label { display: block; margin: 14px 0 4px; font-size: 14px; font-weight: bold; }
+    input[type=text], input[type=password] { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 15px; }
+    .btn-connect { margin-top: 20px; width: 100%; padding: 12px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
+    .error { color: #dc2626; background: #fef2f2; border: 1px solid #fca5a5; border-radius: 8px; padding: 10px; margin-bottom: 14px; font-size: 14px; }
     .hint { font-size: 12px; color: #94a3b8; margin-top: 20px; text-align: center; }
   </style>
 </head>
 <body>
   <div class="card">
-    <h1>Configuration WiFi</h1>
-    <p>Connectez le robot a votre reseau WiFi pour acceder a Internet.</p>"""
+    <h1>WiFi Setup</h1>
+    <p>Connect the robot to your WiFi network to access the internet.</p>"""
     if error:
         yield '\n    <div class="error">'
         yield error
         yield '</div>'
     yield """
+    <span class="section-label">Available Networks</span>
+    <div class="scan-row">
+      <select id="net-list" onchange="pickNetwork(this.value)">
+        <option value="">-- Scanning... --</option>
+      </select>
+      <button class="btn-refresh" id="btn-refresh" type="button" onclick="doScan()">Refresh</button>
+    </div>
+    <hr class="divider">
     <form action="/wifi_setup" method="post">
-      <label for="ssid">Nom du WiFi (SSID)</label>
-      <input type="text" id="ssid" name="ssid" placeholder="MonWiFi" required autocomplete="off">
-      <label for="password">Mot de passe</label>
-      <input type="password" id="password" name="password" placeholder="Mot de passe" autocomplete="off">
-      <button type="submit">Valider</button>
+      <label for="ssid">Network Name (SSID)</label>
+      <input type="text" id="ssid" name="ssid" placeholder="Enter network name" required autocomplete="off">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" placeholder="Password" autocomplete="off">
+      <button class="btn-connect" type="submit">Connect</button>
     </form>
     <p class="hint">Robot_Charly &bull; 192.168.4.1</p>
   </div>
+<script>
+  function pickNetwork(ssid) {
+    if (ssid) { document.getElementById('ssid').value = ssid; }
+  }
+  function doScan() {
+    var sel = document.getElementById('net-list');
+    var btn = document.getElementById('btn-refresh');
+    sel.innerHTML = '<option value="">-- Scanning... --</option>';
+    btn.disabled = true;
+    fetch('/api/scan_wifi')
+      .then(function(r) { return r.json(); })
+      .then(function(nets) {
+        if (nets.length === 0) {
+          sel.innerHTML = '<option value="">-- No networks found --</option>';
+        } else {
+          var html = '<option value="">-- Select a network --</option>';
+          nets.forEach(function(n) {
+            html += '<option value="' + n.ssid.replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '">'
+                  + n.ssid.replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                  + ' (' + n.rssi + ' dBm)</option>';
+          });
+          sel.innerHTML = html;
+        }
+      })
+      .catch(function() {
+        sel.innerHTML = '<option value="">-- Scan failed --</option>';
+      })
+      .finally(function() { btn.disabled = false; });
+  }
+  doScan();
+</script>
 </body>
 </html>"""
 
 
 def render_connecting_page(ip: str):
     yield """<!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="refresh" content="8;url=http://"""
     yield ip
     yield """/">
-  <title>Connexion reussie</title>
+  <title>Connected!</title>
   <style>
     body { font-family: Arial, sans-serif; background: #f0fdf4; margin: 0; padding: 40px 20px; text-align: center; color: #14532d; }
     .card { max-width: 400px; margin: 0 auto; background: #fff; padding: 28px; border-radius: 12px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
@@ -501,13 +600,13 @@ def render_connecting_page(ip: str):
 </head>
 <body>
   <div class="card">
-    <h1>Connexion reussie!</h1>
-    <p>Le robot est connecte au WiFi. Il redemarrage...</p>
+    <h1>Connected!</h1>
+    <p>The robot is connected to WiFi and is restarting...</p>
     <div class="ip">"""
     yield ip
     yield """</div>
-    <p>Nouvelle adresse disponible dans quelques secondes.</p>
-    <p>Redirection automatique vers <strong>http://"""
+    <p>New address available in a few seconds.</p>
+    <p>Redirecting to <strong>http://"""
     yield ip
     yield """/</strong></p>
   </div>
@@ -932,19 +1031,30 @@ async def wifi_setup_route(request):
     password: str = (request.form.get("password") or "").strip()
 
     if not ssid:
-        return Response(render_setup_page("Le nom du WiFi est requis."))
+        return Response(render_setup_page("Network name is required."))
 
-    screen_status("Connexion...", ssid[:16], "")
+    screen_status("Connecting...", ssid[:16], "")
     success, ip = await _try_sta_connect_async(ssid, password)
 
     if success:
-        save_credentials(ssid, password)
-        screen_status("Connecte!", ip, "Redemarrage...")
+        add_credential(ssid, password)
+        screen_status("Connected!", ip, "Restarting...")
         asyncio.create_task(_reset_after_delay_ms(1500))
         return Response(render_connecting_page(ip))
 
     screen_status(SETUP_AP_SSID, WIFI_AP_PASSWORD, "192.168.4.1")
-    return Response(render_setup_page("Echec de connexion. Verifiez le SSID et le mot de passe."))
+    return Response(render_setup_page("Connection failed. Check the SSID and password."))
+
+
+@app.route("/api/scan_wifi")
+async def api_scan_wifi(_request):
+    """Scan for available WiFi networks and return them as JSON."""
+    import ujson
+    if WIFI_MODE != "setup":
+        return Response('[]', headers={"Content-Type": "application/json"})
+    networks = _scan_wifi()
+    payload = ujson.dumps([{"ssid": s, "rssi": r} for s, r in networks])
+    return Response(payload, headers={"Content-Type": "application/json"})
 
 
 @app.route("/set_led", methods=["POST"])
