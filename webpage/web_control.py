@@ -19,6 +19,11 @@ from webpage.wifi_config import add_credential, load_all
 SETUP_AP_SSID: str = "Rob_Charly"
 DEFAULT_MAX_SPEED: int = 220
 
+# ThingSpeak — only active in station mode (robot connected to external WiFi).
+# field1=distance_cm  field2=light_%  field3=accel_x  field4=accel_y  field5=accel_z  field6=temp_c
+THINGSPEAK_WRITE_API_KEY: str = "J5D4CNVPH82HT6DM"
+THINGSPEAK_INTERVAL_S: int = 30  # free plan minimum: 15 s
+
 MODE_LOADING = "loading"
 MODE_WAITING = "waiting"
 MODE_DEBUGGING = "debugging"
@@ -365,6 +370,9 @@ _sensor_photo = None
 _sensor_mpu = None
 _sensors_ready: bool = False
 
+_thingspeak = None
+_thingspeak_task_started: bool = False
+
 
 def _ensure_sensors() -> None:
     """Lazily initialise all sensors on first use."""
@@ -390,6 +398,70 @@ def _ensure_sensors() -> None:
     except Exception as exc:
         print("MPU6050 init failed:", exc)
     gc.collect()
+
+
+def _init_thingspeak() -> None:
+    """Initialise the ThingSpeak client. Called only when in station mode."""
+    global _thingspeak
+    if WIFI_MODE != "station" or not THINGSPEAK_WRITE_API_KEY:
+        return
+    try:
+        from thingspeak.u_thing_speak import ThingSpeak
+        _thingspeak = ThingSpeak()
+        _thingspeak.set_write_api_key(THINGSPEAK_WRITE_API_KEY)
+        print("ThingSpeak ready")
+    except Exception as exc:
+        print("ThingSpeak init failed:", exc)
+
+
+async def _thingspeak_loop() -> None:
+    """Periodically read sensors and push 6 fields to ThingSpeak."""
+    while True:
+        await asyncio.sleep(THINGSPEAK_INTERVAL_S)
+        if _thingspeak is None:
+            continue
+        _ensure_sensors()
+        data = {}
+        try:
+            if _sensor_ultrasound is not None:
+                _sensor_ultrasound.reset_flag()
+                _sensor_ultrasound.start_measurement()
+
+            if _sensor_photo is not None:
+                result = _sensor_photo.measure()
+                data["field2"] = round(result[2], 0)  # light_percent
+
+            if _sensor_mpu is not None:
+                d = _sensor_mpu.read_all_sensors()
+                data["field3"] = round(d["ax"], 3)  # accel_x_g
+                data["field4"] = round(d["ay"], 3)  # accel_y_g
+                data["field5"] = round(d["az"], 3)  # accel_z_g
+                data["field6"] = round(d["temp"], 1)  # temp_c
+
+            if _sensor_ultrasound is not None:
+                for _ in range(4):
+                    await asyncio.sleep_ms(10)
+                    if _sensor_ultrasound.get_flag():
+                        break
+                if _sensor_ultrasound.get_flag():
+                    raw_dist = _sensor_ultrasound.return_distance_cm()
+                    if raw_dist >= 0:
+                        data["field1"] = round(raw_dist, 1)  # distance_cm
+
+            if data:
+                _thingspeak.send_data(data)
+        except Exception as exc:
+            print("ThingSpeak send error:", exc)
+        gc.collect()
+
+
+def _ensure_thingspeak_task() -> None:
+    """Start the ThingSpeak background task exactly once."""
+    global _thingspeak_task_started
+    if _thingspeak_task_started or _thingspeak is None:
+        return
+    asyncio.create_task(_thingspeak_loop())
+    _thingspeak_task_started = True
 
 
 def apply_led_state(led_state: str) -> None:
@@ -1019,6 +1091,7 @@ async def index(_request):
     if WIFI_MODE == "setup":
         return Response(render_setup_page())
     _ensure_music_stop_task()
+    _ensure_thingspeak_task()
     ensure_leds_mode()
     set_mode(MODE_WAITING)
     screen_status("Web UI", "Connected", "")
@@ -1260,4 +1333,5 @@ async def set_screen(request):
     return Response(render_webpage())
 
 
+_init_thingspeak()
 app.run(port=80)
