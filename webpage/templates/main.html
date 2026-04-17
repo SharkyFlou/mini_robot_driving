@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zilena Robot Control</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f7fb; margin: 0; padding: 20px; color: #1f2937; }
+    .card { max-width: 560px; margin: 0 auto; background: #ffffff; padding: 20px; border-radius: 10px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
+    h1 { margin-top: 0; font-size: 24px; }
+    .state { font-weight: bold; margin-bottom: 10px; }
+    .section-title { margin: 18px 0 8px 0; font-weight: bold; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    button { padding: 10px; border: none; border-radius: 8px; cursor: pointer; color: #ffffff; font-weight: bold; }
+    .off { background: #111827; }
+    .red { background: #dc2626; }
+    .green { background: #16a34a; }
+    .blue { background: #2563eb; }
+    .yellow { background: #ca8a04; }
+    .purple { background: #9333ea; }
+    .cyan { background: #0891b2; }
+    .white { background: #6b7280; }
+    .danger { background: #b91c1c; width: 100%; margin-top: 10px; }
+    .motor-wrap { display: flex; gap: 20px; align-items: center; justify-content: center; flex-wrap: wrap; }
+    .joystick-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    .joystick-label { font-size: 13px; color: #334155; }
+    .joystick-base {
+      position: relative; width: 170px; height: 170px; border-radius: 50%;
+      border: 2px solid #1d4ed8;
+      background: radial-gradient(circle at center, #dbeafe 0%, #bfdbfe 55%, #93c5fd 100%);
+      touch-action: none; user-select: none;
+    }
+    .joystick-knob {
+      position: absolute; left: 50%; top: 50%; width: 62px; height: 62px;
+      border-radius: 50%; transform: translate(-50%, -50%);
+      background: linear-gradient(180deg, #2563eb 0%, #1e40af 100%);
+      box-shadow: 0 5px 12px rgba(30,64,175,0.35);
+    }
+    .joystick-state { min-height: 18px; font-weight: bold; color: #1e3a8a; }
+    .speed-wrap { display: flex; gap: 14px; align-items: flex-end; }
+    .speed-panel { display: flex; flex-direction: column; align-items: center; min-width: 90px; }
+    .speed-value { font-weight: bold; margin-bottom: 8px; }
+    .v-slider { writing-mode: vertical-lr; direction: rtl; appearance: slider-vertical; width: 16px; vertical-align: bottom; }
+    .speed-btn { margin-top: 10px; background: #334155; width: 100%; }
+    .song-btn { margin-top: 10px; background: #6d28d9; width: 100%; }
+    .song-stop-btn { margin-top: 10px; background: #7f1d1d; width: 100%; }
+    select { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 6px; border: 1px solid #cbd5e1; border-radius: 8px; }
+    input[type=text] { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 6px; border: 1px solid #cbd5e1; border-radius: 8px; }
+    .send-screen { background: #0f766e; width: 100%; margin-top: 10px; }
+    .tab-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+    .tab-btn { flex: 1; background: #e2e8f0; color: #1f2937; border-radius: 8px; padding: 10px; font-weight: bold; cursor: pointer; border: none; }
+    .tab-btn.active { background: #2563eb; color: #fff; }
+    .sensor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+    .sensor-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; }
+    .sensor-label { font-size: 12px; color: #64748b; margin-bottom: 4px; }
+    .sensor-value { font-size: 20px; font-weight: bold; color: #1e40af; }
+    .sensor-unit { font-size: 12px; color: #94a3b8; }
+    .tele-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+    .tele-table th { background: #e2e8f0; padding: 5px 3px; text-align: center; color: #374151; font-size: 10px; }
+    .tele-table td { padding: 4px 3px; text-align: center; border-bottom: 1px solid #f1f5f9; color: #1e40af; }
+    .tele-table tr:last-child td { border-bottom: none; }
+    .tele-refresh-btn { margin-top: 8px; background: #0f766e; width: 100%; }
+    .tele-status { font-size: 12px; color: #64748b; margin: 6px 0 0 0; text-align: center; min-height: 16px; }
+    .ts-row { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+    .ts-sw { position:relative; display:inline-block; width:42px; height:22px; flex-shrink:0; }
+    .ts-sw input { opacity:0; width:0; height:0; }
+    .ts-knob { position:absolute; cursor:pointer; inset:0; background:#cbd5e1; border-radius:22px; transition:.2s; }
+    .ts-knob:before { content:""; position:absolute; height:16px; width:16px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:.2s; }
+    .ts-sw input:checked + .ts-knob { background:#16a34a; }
+    .ts-sw input:checked + .ts-knob:before { transform:translateX(20px); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Zilena Robot Control</h1>
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tab-motors" onclick="showTab('motors')">Motors</button>
+      <button class="tab-btn" id="tab-misc" onclick="showTab('misc')">Misc</button>
+      <button class="tab-btn" id="tab-sensors" onclick="showTab('sensors')">Sensors</button>
+      <button class="tab-btn" id="tab-telemetry" onclick="showTab('telemetry')">Telemetry</button>
+    </div>
+
+    <div id="pane-motors">
+      <p class="state">Motors: <span id="st-motor">--</span></p>
+      <p class="state">Max speed: <span id="st-speed">--</span></p>
+      <p class="state">Mode: <span id="st-mode">--</span></p>
+      <p class="section-title">Motors control</p>
+      <div class="motor-wrap">
+        <div class="joystick-wrap">
+          <div class="joystick-label">Drag the joystick to move</div>
+          <div class="joystick-base" id="joystick_base">
+            <div class="joystick-knob" id="joystick_knob"></div>
+          </div>
+          <div class="joystick-state" id="joystick_state">x=0 y=0</div>
+        </div>
+        <form action="/set_max_speed" method="post">
+          <div class="speed-wrap">
+            <div class="speed-panel">
+              <label for="max_speed">Max speed</label>
+              <div class="speed-value" id="speed_value">220</div>
+              <input class="v-slider" type="range" id="max_speed" name="max_speed"
+                     orient="vertical" min="70" max="400" value="220"
+                     oninput="document.getElementById('speed_value').textContent = this.value">
+            </div>
+          </div>
+          <button class="speed-btn" type="submit">Apply</button>
+        </form>
+      </div>
+      <p style="margin: 8px 0 0 0; font-size: 12px; color: #475569;">Slider range: 70 to 400</p>
+      <form action="/stop_motors" method="post">
+        <button class="danger" type="submit">Emergency stop</button>
+      </form>
+    </div>
+
+    <div id="pane-misc" style="display:none">
+      <p class="state">LEDs: <span id="st-led">--</span></p>
+      <p class="state">Song: <span id="st-song">--</span></p>
+      <p class="state">Screen: <span id="st-screen">--</span></p>
+      <p class="section-title">Serial LEDs control</p>
+      <div class="grid">
+        <form action="/set_led" method="post"><input type="hidden" name="state" value="off"><button class="off" type="submit">Off</button></form>
+        <form action="/set_led" method="post"><input type="hidden" name="state" value="white"><button class="white" type="submit">White</button></form>
+        <form action="/set_led" method="post"><input type="hidden" name="state" value="red"><button class="red" type="submit">Red</button></form>
+        <form action="/set_led" method="post"><input type="hidden" name="state" value="green"><button class="green" type="submit">Green</button></form>
+        <form action="/set_led" method="post"><input type="hidden" name="state" value="blue"><button class="blue" type="submit">Blue</button></form>
+        <form action="/set_led" method="post"><input type="hidden" name="state" value="yellow"><button class="yellow" type="submit">Yellow</button></form>
+        <form action="/set_led" method="post"><input type="hidden" name="state" value="purple"><button class="purple" type="submit">Purple</button></form>
+        <form action="/set_led" method="post"><input type="hidden" name="state" value="cyan"><button class="cyan" type="submit">Cyan</button></form>
+      </div>
+      <p class="section-title">Music control</p>
+      <form action="/play_song" method="post">
+        <label for="song_index">Choose a song</label>
+        <select id="song_index" name="song_index"></select>
+        <button class="song-btn" type="submit">Play selected song</button>
+      </form>
+      <form action="/stop_song" method="post">
+        <button class="song-stop-btn" type="submit">Stop song</button>
+      </form>
+      <p class="section-title">Screen control</p>
+      <form action="/set_screen" method="post">
+        <label>Line 1</label>
+        <input type="text" name="line1" maxlength="16" placeholder="Line 1">
+        <label>Line 2</label>
+        <input type="text" name="line2" maxlength="16" placeholder="Line 2">
+        <label>Line 3</label>
+        <input type="text" name="line3" maxlength="16" placeholder="Line 3">
+        <button class="send-screen" type="submit">Send to screen</button>
+      </form>
+    </div>
+
+    <div id="pane-sensors" style="display:none">
+      <div class="sensor-grid">
+        <div class="sensor-card">
+          <div class="sensor-label">Distance</div>
+          <div class="sensor-value" id="s-dist">--</div>
+          <div class="sensor-unit">cm</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">Light</div>
+          <div class="sensor-value" id="s-light-pct">--</div>
+          <div class="sensor-unit">%</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">Light voltage</div>
+          <div class="sensor-value" id="s-light-v">--</div>
+          <div class="sensor-unit">V</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">Light raw</div>
+          <div class="sensor-value" id="s-light-raw">--</div>
+          <div class="sensor-unit">ADC</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">Accel X</div>
+          <div class="sensor-value" id="s-ax">--</div>
+          <div class="sensor-unit">g</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">Accel Y</div>
+          <div class="sensor-value" id="s-ay">--</div>
+          <div class="sensor-unit">g</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">Accel Z</div>
+          <div class="sensor-value" id="s-az">--</div>
+          <div class="sensor-unit">g</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">Gyro X</div>
+          <div class="sensor-value" id="s-gx">--</div>
+          <div class="sensor-unit">&deg;/s</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">Gyro Y</div>
+          <div class="sensor-value" id="s-gy">--</div>
+          <div class="sensor-unit">&deg;/s</div>
+        </div>
+        <div class="sensor-card">
+          <div class="sensor-label">Gyro Z</div>
+          <div class="sensor-value" id="s-gz">--</div>
+          <div class="sensor-unit">&deg;/s</div>
+        </div>
+        <div class="sensor-card" style="grid-column: span 2">
+          <div class="sensor-label">Temperature (MPU6050)</div>
+          <div class="sensor-value" id="s-temp">--</div>
+          <div class="sensor-unit">&deg;C</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="pane-telemetry" style="display:none">
+      <div class="ts-row">
+        <label class="ts-sw">
+          <input type="checkbox" id="ts-chk" onchange="toggleTS(this.checked)">
+          <span class="ts-knob"></span>
+        </label>
+        <span style="font-size:13px;color:#374151">Send to ThingSpeak</span>
+        <span id="ts-lbl" style="font-size:12px;font-weight:bold;color:#94a3b8">Off</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="tele-table">
+          <thead><tr>
+            <th>Time</th><th>Dist cm</th><th>Light %</th>
+            <th>Ax g</th><th>Ay g</th><th>Az g</th><th>Temp &deg;C</th>
+          </tr></thead>
+          <tbody id="tele-tbody"><tr><td colspan="7" style="color:#94a3b8">--</td></tr></tbody>
+        </table>
+      </div>
+      <button class="tele-refresh-btn" type="button" onclick="fetchTelemetry()">Refresh now</button>
+      <p class="tele-status" id="tele-status"></p>
+    </div>
+  </div>
+<script>
+    var _tsReadKey = '';
+    var _tsChannelId = '';
+
+    // Load initial state from server
+    fetch('/api/state').then(function(r) { return r.json(); }).then(function(s) {
+        document.getElementById('st-motor').textContent = s.motor || '--';
+        document.getElementById('st-speed').textContent = s.max_speed || '--';
+        document.getElementById('st-mode').textContent = s.mode || '--';
+        document.getElementById('st-led').textContent = s.led || '--';
+        document.getElementById('st-song').textContent = s.song || '--';
+        document.getElementById('st-screen').textContent = s.screen || '--';
+        var spd = s.max_speed || '220';
+        var sl = document.getElementById('max_speed');
+        if (sl) { sl.value = spd; }
+        document.getElementById('speed_value').textContent = spd;
+        var sel = document.getElementById('song_index');
+        if (sel && s.songs) {
+            s.songs.forEach(function(t, i) {
+                var o = document.createElement('option');
+                o.value = i; o.textContent = t;
+                if (t === s.song) { o.selected = true; }
+                sel.appendChild(o);
+            });
+        }
+        _tsReadKey = s.ts_read_key || '';
+        _tsChannelId = s.ts_channel_id || '';
+        var chk = document.getElementById('ts-chk');
+        if (chk) {
+            chk.checked = !!s.ts_enabled;
+            var lbl = document.getElementById('ts-lbl');
+            if (lbl) { lbl.style.color = s.ts_enabled ? '#16a34a' : '#94a3b8'; lbl.textContent = s.ts_enabled ? 'On' : 'Off'; }
+        }
+    }).catch(function() {});
+
+    (function() {
+        var base = document.getElementById('joystick_base');
+        var knob = document.getElementById('joystick_knob');
+        var joystickState = document.getElementById('joystick_state');
+        var maxDistance = 52;
+        var sessionId = String(Date.now()) + '-' + String(Math.floor(Math.random() * 1000000));
+        var dragging = false;
+        var lastEnqueueMs = 0;
+        var queuedX = 999;
+        var queuedY = 999;
+        var latestCommand = null;
+        var inFlight = false;
+        var commandSeq = 0;
+
+        function flushLatestCommand() {
+            if (inFlight || latestCommand === null) { return; }
+            var cmd = latestCommand;
+            latestCommand = null;
+            inFlight = true;
+            fetch('/api/drive', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'x=' + encodeURIComponent(cmd.x) + '&y=' + encodeURIComponent(cmd.y)
+                    + '&sid=' + encodeURIComponent(sessionId) + '&seq=' + encodeURIComponent(cmd.seq)
+            }).catch(function() {}).finally(function() { inFlight = false; flushLatestCommand(); });
+        }
+
+        function enqueueVector(xp, yp, force) {
+            var now = Date.now();
+            if (!force && (now - lastEnqueueMs) < 50 && Math.abs(xp - queuedX) < 2 && Math.abs(yp - queuedY) < 2) { return; }
+            lastEnqueueMs = now; queuedX = xp; queuedY = yp;
+            latestCommand = { x: xp, y: yp, seq: commandSeq++ };
+            flushLatestCommand();
+        }
+
+        function resetKnob() {
+            knob.style.transform = 'translate(-50%, -50%)';
+            joystickState.textContent = 'x=0 y=0';
+            enqueueVector(0, 0, true);
+            setTimeout(function() { enqueueVector(0, 0, true); }, 60);
+        }
+
+        function updateJoystick(cx, cy) {
+            var rect = base.getBoundingClientRect();
+            var dx = cx - (rect.left + rect.width / 2);
+            var dy = cy - (rect.top + rect.height / 2);
+            var dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > maxDistance) { var sc = maxDistance / dist; dx *= sc; dy *= sc; }
+            knob.style.transform = 'translate(calc(-50% + ' + dx + 'px), calc(-50% + ' + dy + 'px))';
+            var xp = Math.round((dx / maxDistance) * 100);
+            var yp = Math.round((-dy / maxDistance) * 100);
+            joystickState.textContent = 'x=' + xp + ' y=' + yp;
+            enqueueVector(xp, yp, false);
+        }
+
+        base.addEventListener('pointerdown', function(e) { dragging = true; base.setPointerCapture(e.pointerId); updateJoystick(e.clientX, e.clientY); });
+        base.addEventListener('pointermove', function(e) { if (dragging) { updateJoystick(e.clientX, e.clientY); } });
+        function stopDragging() { if (!dragging) { return; } dragging = false; resetKnob(); }
+        base.addEventListener('pointerup', stopDragging);
+        base.addEventListener('pointercancel', stopDragging);
+        base.addEventListener('lostpointercapture', stopDragging);
+    })();
+
+    function showTab(name) {
+        ['motors', 'misc', 'sensors', 'telemetry'].forEach(function(t) {
+            document.getElementById('pane-' + t).style.display = name === t ? '' : 'none';
+            document.getElementById('tab-' + t).className = 'tab-btn' + (name === t ? ' active' : '');
+        });
+        if (name === 'sensors') { startSensors(); } else { stopSensors(); }
+        if (name === 'telemetry') { startTelemetry(); } else { stopTelemetry(); }
+        try { localStorage.setItem('active-tab', name); } catch(_) {}
+    }
+    (function() { var t = localStorage.getItem('active-tab'); if (t) { showTab(t); } })();
+
+    var _sensorTimer = null;
+    function startSensors() { if (_sensorTimer !== null) { return; } fetchSensors(); _sensorTimer = setInterval(fetchSensors, 800); }
+    function stopSensors() { if (_sensorTimer !== null) { clearInterval(_sensorTimer); _sensorTimer = null; } }
+    function setSensor(id, v, dec) {
+        var el = document.getElementById(id);
+        if (el) { el.textContent = (v === null || v === undefined) ? 'N/A' : (typeof v === 'number' ? v.toFixed(dec) : String(v)); }
+    }
+    function fetchSensors() {
+        fetch('/api/sensors').then(function(r) { return r.json(); }).then(function(d) {
+            setSensor('s-dist', d.distance_cm, 1); setSensor('s-light-pct', d.light_percent, 0);
+            setSensor('s-light-v', d.light_voltage, 2); setSensor('s-light-raw', d.light_raw, 0);
+            setSensor('s-ax', d.accel_x_g, 3); setSensor('s-ay', d.accel_y_g, 3); setSensor('s-az', d.accel_z_g, 3);
+            setSensor('s-gx', d.gyro_x_dps, 1); setSensor('s-gy', d.gyro_y_dps, 1); setSensor('s-gz', d.gyro_z_dps, 1);
+            setSensor('s-temp', d.temp_c, 1);
+        }).catch(function() {});
+    }
+
+    var _teleTimer = null;
+    function toggleTS(on) {
+        fetch('/api/thingspeak', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: 'enabled=' + (on ? '1' : '0') })
+            .then(function() { var lbl = document.getElementById('ts-lbl'); if (lbl) { lbl.style.color = on ? '#16a34a' : '#94a3b8'; lbl.textContent = on ? 'On' : 'Off'; } })
+            .catch(function() {});
+    }
+    function startTelemetry() { if (_teleTimer !== null) { return; } fetchTelemetry(); _teleTimer = setInterval(fetchTelemetry, 30000); }
+    function stopTelemetry() { if (_teleTimer !== null) { clearInterval(_teleTimer); _teleTimer = null; } }
+    function fetchTelemetry() {
+        var st = document.getElementById('tele-status');
+        if (st) { st.textContent = 'Fetching...'; }
+        fetch('https://api.thingspeak.com/channels/' + _tsChannelId + '/feeds.json?api_key=' + _tsReadKey + '&results=20')
+            .then(function(r) { if (!r.ok) { throw new Error('HTTP ' + r.status); } return r.json(); })
+            .then(function(data) {
+                var feeds = (data && data.feeds) ? data.feeds : [];
+                var tb = document.getElementById('tele-tbody');
+                if (!tb) { return; }
+                if (!feeds.length) { tb.innerHTML = '<tr><td colspan="7" style="color:#94a3b8">No data yet</td></tr>'; }
+                else {
+                    var h = '';
+                    for (var i = feeds.length - 1; i >= 0; i--) {
+                        var f = feeds[i];
+                        h += '<tr><td>' + (f.created_at ? f.created_at.substr(11, 8) : '-') + '</td>'
+                           + '<td>' + (f.field1||'-') + '</td><td>' + (f.field2||'-') + '</td>'
+                           + '<td>' + (f.field3||'-') + '</td><td>' + (f.field4||'-') + '</td>'
+                           + '<td>' + (f.field5||'-') + '</td><td>' + (f.field6||'-') + '</td></tr>';
+                    }
+                    tb.innerHTML = h;
+                }
+                if (st) { st.textContent = 'Updated ' + new Date().toLocaleTimeString(); }
+            })
+            .catch(function(e) { if (st) { st.textContent = 'Error: ' + e.message; } });
+    }
+
+    // Convert all form submissions to AJAX to avoid full page reloads
+    document.querySelectorAll('form[action]').forEach(function(form) {
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            var fd = new FormData(form);
+            var body = new URLSearchParams(fd).toString();
+            fetch(form.action, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: body
+            }).then(function() {
+                var a = form.action;
+                if (a.indexOf('/set_led') !== -1) {
+                    document.getElementById('st-led').textContent = fd.get('state') || 'off';
+                } else if (a.indexOf('/set_max_speed') !== -1) {
+                    var spd = fd.get('max_speed') || '220';
+                    document.getElementById('st-speed').textContent = spd;
+                } else if (a.indexOf('/play_song') !== -1) {
+                    var sel = document.getElementById('song_index');
+                    if (sel) { document.getElementById('st-song').textContent = sel.options[sel.selectedIndex].text; }
+                } else if (a.indexOf('/stop_song') !== -1) {
+                    document.getElementById('st-song').textContent = 'stopped';
+                } else if (a.indexOf('/stop_motors') !== -1) {
+                    document.getElementById('st-motor').textContent = 'stopped';
+                    document.getElementById('st-mode').textContent = 'waiting';
+                } else if (a.indexOf('/set_screen') !== -1) {
+                    var l1 = fd.get('line1') || '';
+                    document.getElementById('st-screen').textContent = l1 ? l1.substring(0, 8) : 'custom';
+                }
+            }).catch(function() {});
+        });
+    });
+</script>
+</body>
+</html>

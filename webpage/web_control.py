@@ -1,5 +1,6 @@
 import gc
 import asyncio
+import _thread
 from machine import Pin
 
 from leds.rgb_led import RGBLed
@@ -15,6 +16,7 @@ import network
 import machine as _machine
 from webpage.microdot import Microdot, Response
 from webpage.wifi_config import add_credential, load_all
+import ujson
 
 SETUP_AP_SSID: str = "Rob_Charly"
 DEFAULT_MAX_SPEED: int = 220
@@ -157,14 +159,16 @@ def _try_sta_connect(ssid: str, password: str, timeout: int = 15) -> tuple:
     if not was_active:
         time.sleep(0.3)  # let radio settle after first activation
     sta.connect(ssid, password)
-    for _ in range(timeout * 2):
+    for i in range(timeout * 2):
+        time.sleep(0.5)
         status = sta.status()
         if status == network.STAT_GOT_IP:
             return True, sta.ifconfig()[0]
-        if status in (network.STAT_WRONG_PASSWORD, network.STAT_NO_AP_FOUND, network.STAT_CONNECT_FAIL):
+        # Wait at least 2 s before treating failure as terminal — the radio
+        # can report transient CONNECT_FAIL right after sta.connect().
+        if i >= 4 and status in (network.STAT_WRONG_PASSWORD, network.STAT_NO_AP_FOUND, network.STAT_CONNECT_FAIL):
             sta.active(False)
             return False, ''
-        time.sleep(0.5)
     sta.active(False)
     return False, ''
 
@@ -175,16 +179,25 @@ async def _try_sta_connect_async(ssid: str, password: str, timeout: int = 15) ->
     Returns (True, ip_address) on success or (False, '') on failure.
     """
     sta = network.WLAN(network.STA_IF)
+    was_active = sta.active()
     sta.active(True)
+    if not was_active:
+        await asyncio.sleep_ms(300)  # let radio settle after activation
+    try:
+        sta.disconnect()  # clear stale state from previous boot attempt
+    except Exception:
+        pass
     sta.connect(ssid, password)
-    for _ in range(timeout * 5):
+    for i in range(timeout * 5):
+        await asyncio.sleep_ms(200)
         status = sta.status()
         if status == network.STAT_GOT_IP:
             return True, sta.ifconfig()[0]
-        if status in (network.STAT_WRONG_PASSWORD, network.STAT_NO_AP_FOUND, network.STAT_CONNECT_FAIL):
+        # Wait at least 2 s before treating failure as terminal — the radio
+        # can report transient CONNECT_FAIL while AP is also active.
+        if i >= 10 and status in (network.STAT_WRONG_PASSWORD, network.STAT_NO_AP_FOUND, network.STAT_CONNECT_FAIL):
             sta.active(False)
             return False, ''
-        await asyncio.sleep_ms(200)
     sta.active(False)
     return False, ''
 
@@ -307,15 +320,6 @@ def enter_screen_mode() -> None:
     set_mode(MODE_SCREEN)
 
 
-def _build_song_options(selected_title: str) -> str:
-    options: list[str] = []
-    for song_index, title in enumerate(song_titles):
-        selected: str = " selected" if title == selected_title else ""
-        options.append(
-            "<option value=\"" + str(song_index) + "\"" + selected + ">" + title + "</option>"
-        )
-    return "".join(options)
-
 
 def _get_song_title(song_index: int) -> str:
     if 0 <= song_index < len(song_titles):
@@ -374,6 +378,8 @@ _sensors_ready: bool = False
 
 _thingspeak = None
 _thingspeak_task_started: bool = False
+_ts_sending: bool = False
+_ts_enabled: bool = False  # off by default — user must enable from the UI
 
 
 def _ensure_sensors() -> None:
@@ -416,11 +422,26 @@ def _init_thingspeak() -> None:
         print("ThingSpeak init failed:", exc)
 
 
+def _thingspeak_send_bg(data: dict) -> None:
+    """Blocking HTTP POST to ThingSpeak — runs in a separate thread so the
+    asyncio event loop is never stalled."""
+    global _ts_sending
+    try:
+        _thingspeak.send_data(data)
+    except Exception as exc:
+        print("ThingSpeak send error:", exc)
+    finally:
+        _ts_sending = False
+        gc.collect()
+
+
 async def _thingspeak_loop() -> None:
-    """Periodically read sensors and push 6 fields to ThingSpeak."""
+    """Collect sensor readings every interval, then fire a background thread
+    for the blocking HTTP send.  The event loop stays free at all times."""
+    global _ts_sending
     while True:
         await asyncio.sleep(THINGSPEAK_INTERVAL_S)
-        if _thingspeak is None:
+        if _thingspeak is None or _ts_sending or not _ts_enabled:
             continue
         _ensure_sensors()
         data = {}
@@ -451,9 +472,10 @@ async def _thingspeak_loop() -> None:
                         data["field1"] = round(raw_dist, 1)  # distance_cm
 
             if data:
-                _thingspeak.send_data(data)
+                _ts_sending = True
+                _thread.start_new_thread(_thingspeak_send_bg, (data,))
         except Exception as exc:
-            print("ThingSpeak send error:", exc)
+            print("ThingSpeak prepare error:", exc)
         gc.collect()
 
 
@@ -688,509 +710,18 @@ def render_connecting_page(ip: str):
 </html>"""
 
 
-def render_webpage():
-    selected_song: str = state["song"]
-    song_options: str = _build_song_options(selected_song)
-    gc.collect()
-    yield """<!DOCTYPE html>
-<html lang=\"en\">
-<head>
-  <meta charset=\"UTF-8\">
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
-  <title>Zilena Robot Control</title>
-  <style>
-    body { font-family: Arial, sans-serif; background: #f4f7fb; margin: 0; padding: 20px; color: #1f2937; }
-    .card { max-width: 560px; margin: 0 auto; background: #ffffff; padding: 20px; border-radius: 10px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); }
-    h1 { margin-top: 0; font-size: 24px; }
-    .state { font-weight: bold; margin-bottom: 10px; }
-    .section-title { margin: 18px 0 8px 0; font-weight: bold; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    button { padding: 10px; border: none; border-radius: 8px; cursor: pointer; color: #ffffff; font-weight: bold; }
-    .off { background: #111827; }
-    .red { background: #dc2626; }
-    .green { background: #16a34a; }
-    .blue { background: #2563eb; }
-    .yellow { background: #ca8a04; }
-    .purple { background: #9333ea; }
-    .cyan { background: #0891b2; }
-    .white { background: #6b7280; }
-    .danger { background: #b91c1c; width: 100%; margin-top: 10px; }
-        .motor-wrap { display: flex; gap: 20px; align-items: center; justify-content: center; flex-wrap: wrap; }
-        .joystick-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
-        .joystick-label { font-size: 13px; color: #334155; }
-        .joystick-base {
-            position: relative;
-            width: 170px;
-            height: 170px;
-            border-radius: 50%;
-            border: 2px solid #1d4ed8;
-            background: radial-gradient(circle at center, #dbeafe 0%, #bfdbfe 55%, #93c5fd 100%);
-            touch-action: none;
-            user-select: none;
-        }
-        .joystick-knob {
-            position: absolute;
-            left: 50%;
-            top: 50%;
-            width: 62px;
-            height: 62px;
-            border-radius: 50%;
-            transform: translate(-50%, -50%);
-            background: linear-gradient(180deg, #2563eb 0%, #1e40af 100%);
-            box-shadow: 0 5px 12px rgba(30, 64, 175, 0.35);
-        }
-        .joystick-state { min-height: 18px; font-weight: bold; color: #1e3a8a; }
-    .speed-wrap { display: flex; gap: 14px; align-items: flex-end; }
-    .speed-panel { display: flex; flex-direction: column; align-items: center; min-width: 90px; }
-    .speed-value { font-weight: bold; margin-bottom: 8px; }
-    .v-slider {
-      writing-mode: vertical-lr;
-      direction: rtl;
-      appearance: slider-vertical;
-      width: 16px;
-      vertical-align: bottom;
-    }
-    .speed-btn { margin-top: 10px; background: #334155; width: 100%; }
-    .song-btn { margin-top: 10px; background: #6d28d9; width: 100%; }
-    .song-stop-btn { margin-top: 10px; background: #7f1d1d; width: 100%; }
-    select { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 6px; border: 1px solid #cbd5e1; border-radius: 8px; }
-    input[type=text] { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 6px; border: 1px solid #cbd5e1; border-radius: 8px; }
-    .send-screen { background: #0f766e; width: 100%; margin-top: 10px; }
-    .tab-bar { display: flex; gap: 8px; margin-bottom: 16px; }
-    .tab-btn { flex: 1; background: #e2e8f0; color: #1f2937; border-radius: 8px; padding: 10px; font-weight: bold; cursor: pointer; border: none; }
-    .tab-btn.active { background: #2563eb; color: #fff; }
-    .sensor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
-    .sensor-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; }
-    .sensor-label { font-size: 12px; color: #64748b; margin-bottom: 4px; }
-    .sensor-value { font-size: 20px; font-weight: bold; color: #1e40af; }
-    .sensor-unit { font-size: 12px; color: #94a3b8; }
-    .tele-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
-    .tele-table th { background: #e2e8f0; padding: 5px 3px; text-align: center; color: #374151; font-size: 10px; }
-    .tele-table td { padding: 4px 3px; text-align: center; border-bottom: 1px solid #f1f5f9; color: #1e40af; }
-    .tele-table tr:last-child td { border-bottom: none; }
-    .tele-refresh-btn { margin-top: 8px; background: #0f766e; width: 100%; }
-    .tele-status { font-size: 12px; color: #64748b; margin: 6px 0 0 0; text-align: center; min-height: 16px; }
-  </style>
-</head>
-<body>
-  <div class=\"card\">
-    <h1>Zilena Robot Control</h1>
-    <div class=\"tab-bar\">
-      <button class=\"tab-btn active\" id=\"tab-motors\" onclick=\"showTab('motors')\">Motors</button>
-      <button class=\"tab-btn\" id=\"tab-misc\" onclick=\"showTab('misc')\">Misc</button>
-      <button class=\"tab-btn\" id=\"tab-sensors\" onclick=\"showTab('sensors')\">Sensors</button>
-      <button class=\"tab-btn\" id=\"tab-telemetry\" onclick=\"showTab('telemetry')\">Telemetry</button>
-    </div>
-    <div id=\"pane-motors\">
-    <p class=\"state\">Motors: """
-    yield state["motor"]
-    yield """</p>
-    <p class=\"state\">Max speed: """
-    yield state["max_speed"]
-    yield """</p>
-    <p class=\"state\">Mode: """
-    yield state["mode"]
-    yield """</p>
-
-    <p class=\"section-title\">Motors control</p>
-        <div class=\"motor-wrap\">
-            <div class=\"joystick-wrap\">
-                <div class=\"joystick-label\">Drag the joystick to move</div>
-                <div class=\"joystick-base\" id=\"joystick_base\">
-                    <div class=\"joystick-knob\" id=\"joystick_knob\"></div>
-                </div>
-                <div class=\"joystick-state\" id=\"joystick_state\">x=0 y=0</div>
-            </div>
-
-      <form action=\"/set_max_speed\" method=\"post\">
-        <div class=\"speed-wrap\">
-                    <div class=\"speed-panel\">
-                        <label for=\"max_speed\">Max speed</label>
-                        <div class=\"speed-value\" id=\"speed_value\">"""
-    yield state["max_speed"]
-    yield """</div>
-                        <input class=\"v-slider\" type=\"range\" id=\"max_speed\" name=\"max_speed\" orient=\"vertical\" min=\"70\" max=\"400\" value=\""""
-    yield state["max_speed"]
-    yield """\" oninput=\"document.getElementById('speed_value').textContent = this.value\">
-                    </div>
-        </div>
-        <button class=\"speed-btn\" type=\"submit\">Apply</button>
-      </form>
-    </div>
-    <p style=\"margin: 8px 0 0 0; font-size: 12px; color: #475569;\">Slider range: 70 to 400</p>
-
-    <form action=\"/stop_motors\" method=\"post\">
-      <button class=\"danger\" type=\"submit\">Emergency stop</button>
-    </form>
-    </div>
-    <div id=\"pane-misc\" style=\"display:none\">
-    <p class=\"state\">LEDs: """
-    yield state["led"]
-    yield """</p>
-    <p class=\"state\">Song: """
-    yield state["song"]
-    yield """</p>
-    <p class=\"state\">Screen: """
-    yield state["screen"]
-    yield """</p>
-
-    <p class=\"section-title\">Serial LEDs control</p>
-    <div class=\"grid\">
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"off\"><button class=\"off\" type=\"submit\">Off</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"white\"><button class=\"white\" type=\"submit\">White</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"red\"><button class=\"red\" type=\"submit\">Red</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"green\"><button class=\"green\" type=\"submit\">Green</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"blue\"><button class=\"blue\" type=\"submit\">Blue</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"yellow\"><button class=\"yellow\" type=\"submit\">Yellow</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"purple\"><button class=\"purple\" type=\"submit\">Purple</button></form>
-      <form action=\"/set_led\" method=\"post\"><input type=\"hidden\" name=\"state\" value=\"cyan\"><button class=\"cyan\" type=\"submit\">Cyan</button></form>
-    </div>
-
-        <p class=\"section-title\">Music control</p>
-        <form action=\"/play_song\" method=\"post\">
-            <label for=\"song_index\">Choose a song</label>
-            <select id=\"song_index\" name=\"song_index\">"""
-    yield song_options
-    yield """</select>
-            <button class=\"song-btn\" type=\"submit\">Play selected song</button>
-        </form>
-        <form action=\"/stop_song\" method=\"post\">
-            <button class=\"song-stop-btn\" type=\"submit\">Stop song</button>
-        </form>
-
-    <p class=\"section-title\">Screen control</p>
-    <form action=\"/set_screen\" method=\"post\">
-      <label>Line 1</label>
-      <input type=\"text\" name=\"line1\" maxlength=\"16\" placeholder=\"Line 1\">
-      <label>Line 2</label>
-      <input type=\"text\" name=\"line2\" maxlength=\"16\" placeholder=\"Line 2\">
-      <label>Line 3</label>
-      <input type=\"text\" name=\"line3\" maxlength=\"16\" placeholder=\"Line 3\">
-      <button class=\"send-screen\" type=\"submit\">Send to screen</button>
-    </form>
-    </div>
-    <div id=\"pane-sensors\" style=\"display:none\">
-      <div class=\"sensor-grid\">
-        <div class=\"sensor-card\">
-          <div class=\"sensor-label\">Distance</div>
-          <div class=\"sensor-value\" id=\"s-dist\">--</div>
-          <div class=\"sensor-unit\">cm</div>
-        </div>
-        <div class=\"sensor-card\">
-          <div class=\"sensor-label\">Light</div>
-          <div class=\"sensor-value\" id=\"s-light-pct\">--</div>
-          <div class=\"sensor-unit\">%</div>
-        </div>
-        <div class=\"sensor-card\">
-          <div class=\"sensor-label\">Light voltage</div>
-          <div class=\"sensor-value\" id=\"s-light-v\">--</div>
-          <div class=\"sensor-unit\">V</div>
-        </div>
-        <div class=\"sensor-card\">
-          <div class=\"sensor-label\">Light raw</div>
-          <div class=\"sensor-value\" id=\"s-light-raw\">--</div>
-          <div class=\"sensor-unit\">ADC</div>
-        </div>
-        <div class=\"sensor-card\">
-          <div class=\"sensor-label\">Accel X</div>
-          <div class=\"sensor-value\" id=\"s-ax\">--</div>
-          <div class=\"sensor-unit\">g</div>
-        </div>
-        <div class=\"sensor-card\">
-          <div class=\"sensor-label\">Accel Y</div>
-          <div class=\"sensor-value\" id=\"s-ay\">--</div>
-          <div class=\"sensor-unit\">g</div>
-        </div>
-        <div class=\"sensor-card\">
-          <div class=\"sensor-label\">Accel Z</div>
-          <div class=\"sensor-value\" id=\"s-az\">--</div>
-          <div class=\"sensor-unit\">g</div>
-        </div>
-        <div class=\"sensor-card\">
-          <div class=\"sensor-label\">Gyro X</div>
-          <div class=\"sensor-value\" id=\"s-gx\">--</div>
-          <div class=\"sensor-unit\">&deg;/s</div>
-        </div>
-        <div class=\"sensor-card\">
-          <div class=\"sensor-label\">Gyro Y</div>
-          <div class=\"sensor-value\" id=\"s-gy\">--</div>
-          <div class=\"sensor-unit\">&deg;/s</div>
-        </div>
-        <div class=\"sensor-card\">
-          <div class=\"sensor-label\">Gyro Z</div>
-          <div class=\"sensor-value\" id=\"s-gz\">--</div>
-          <div class=\"sensor-unit\">&deg;/s</div>
-        </div>
-        <div class=\"sensor-card\" style=\"grid-column: span 2\">
-          <div class=\"sensor-label\">Temperature (MPU6050)</div>
-          <div class=\"sensor-value\" id=\"s-temp\">--</div>
-          <div class=\"sensor-unit\">&deg;C</div>
-        </div>
-      </div>
-    </div>
-    <div id=\"pane-telemetry\" style=\"display:none\">
-      <p style=\"font-size:13px;color:#475569;margin:0 0 8px 0\">Last 20 entries sent to ThingSpeak (auto-refresh every 30 s)</p>
-      <div style=\"overflow-x:auto\">
-        <table class=\"tele-table\">
-          <thead><tr>
-            <th>Time</th>
-            <th>Dist (cm)</th>
-            <th>Light (%)</th>
-            <th>Acc X (g)</th>
-            <th>Acc Y (g)</th>
-            <th>Acc Z (g)</th>
-            <th>Temp (&deg;C)</th>
-          </tr></thead>
-          <tbody id=\"tele-tbody\"><tr><td colspan=\"7\" style=\"color:#94a3b8\">Loading...</td></tr></tbody>
-        </table>
-      </div>
-      <button class=\"tele-refresh-btn\" type=\"button\" onclick=\"fetchTelemetry()\">Refresh now</button>
-      <p class=\"tele-status\" id=\"tele-status\"></p>
-    </div>
-  </div>
-<script>
-    var _tsReadKey = '"""
-    yield THINGSPEAK_READ_API_KEY
-    yield """';
-    var _tsChannelId = '"""
-    yield THINGSPEAK_CHANNEL_ID
-    yield """';
-</script>
-<script>
-    (function() {
-        const base = document.getElementById('joystick_base');
-        const knob = document.getElementById('joystick_knob');
-        const joystickState = document.getElementById('joystick_state');
-        const maxDistance = 52;
-        const sessionId = String(Date.now()) + '-' + String(Math.floor(Math.random() * 1000000));
-        let dragging = false;
-        let lastEnqueueMs = 0;
-        let queuedX = 999;
-        let queuedY = 999;
-        let latestCommand = null;
-        let inFlight = false;
-        let commandSeq = 0;
-
-        function flushLatestCommand() {
-            if (inFlight || latestCommand === null) {
-                return;
-            }
-
-            const commandToSend = latestCommand;
-            latestCommand = null;
-            inFlight = true;
-
-            fetch('/api/drive', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: 'x=' + encodeURIComponent(commandToSend.x)
-                    + '&y=' + encodeURIComponent(commandToSend.y)
-                    + '&sid=' + encodeURIComponent(sessionId)
-                    + '&seq=' + encodeURIComponent(commandToSend.seq)
-            }).catch(function(_err) {
-            }).finally(function() {
-                inFlight = false;
-                flushLatestCommand();
-            });
-        }
-
-        function enqueueVector(xPercent, yPercent, force) {
-            const now = Date.now();
-            const tooSoon = (now - lastEnqueueMs) < 50;
-            const tinyChange = Math.abs(xPercent - queuedX) < 2 && Math.abs(yPercent - queuedY) < 2;
-            if (!force && tooSoon && tinyChange) {
-                return;
-            }
-
-            lastEnqueueMs = now;
-            queuedX = xPercent;
-            queuedY = yPercent;
-            latestCommand = {
-                x: xPercent,
-                y: yPercent,
-                seq: commandSeq,
-            };
-            commandSeq += 1;
-            flushLatestCommand();
-        }
-
-        function resetKnob() {
-            knob.style.transform = 'translate(-50%, -50%)';
-            joystickState.textContent = 'x=0 y=0';
-            enqueueVector(0, 0, true);
-
-            // Ensure stop survives transient network loss when finger is released.
-            setTimeout(function() {
-                enqueueVector(0, 0, true);
-            }, 60);
-        }
-
-        function updateJoystick(clientX, clientY) {
-            const rect = base.getBoundingClientRect();
-            const centerX = rect.left + (rect.width / 2);
-            const centerY = rect.top + (rect.height / 2);
-            let dx = clientX - centerX;
-            let dy = clientY - centerY;
-            const distance = Math.sqrt((dx * dx) + (dy * dy));
-
-            if (distance > maxDistance) {
-                const scale = maxDistance / distance;
-                dx *= scale;
-                dy *= scale;
-            }
-
-            knob.style.transform = 'translate(calc(-50% + ' + dx + 'px), calc(-50% + ' + dy + 'px))';
-
-            const xPercent = Math.round((dx / maxDistance) * 100);
-            const yPercent = Math.round((-dy / maxDistance) * 100);
-            joystickState.textContent = 'x=' + xPercent + ' y=' + yPercent;
-            enqueueVector(xPercent, yPercent, false);
-        }
-
-        base.addEventListener('pointerdown', function(event) {
-            dragging = true;
-            base.setPointerCapture(event.pointerId);
-            updateJoystick(event.clientX, event.clientY);
-        });
-
-        base.addEventListener('pointermove', function(event) {
-            if (!dragging) {
-                return;
-            }
-            updateJoystick(event.clientX, event.clientY);
-        });
-
-        function stopDragging() {
-            if (!dragging) {
-                return;
-            }
-            dragging = false;
-            resetKnob();
-        }
-
-        base.addEventListener('pointerup', stopDragging);
-        base.addEventListener('pointercancel', stopDragging);
-        base.addEventListener('lostpointercapture', stopDragging);
-    })();
-
-    function showTab(name) {
-        ['motors', 'misc', 'sensors', 'telemetry'].forEach(function(t) {
-            document.getElementById('pane-' + t).style.display = name === t ? '' : 'none';
-            document.getElementById('tab-' + t).className = 'tab-btn' + (name === t ? ' active' : '');
-        });
-        if (name === 'sensors') { startSensors(); } else { stopSensors(); }
-        if (name === 'telemetry') { startTelemetry(); } else { stopTelemetry(); }
-        try { localStorage.setItem('active-tab', name); } catch(_) {}
-    }
-    (function() { var t = localStorage.getItem('active-tab'); if (t) { showTab(t); } })();
-
-    var _sensorTimer = null;
-
-    function startSensors() {
-        if (_sensorTimer !== null) { return; }
-        fetchSensors();
-        _sensorTimer = setInterval(fetchSensors, 800);
-    }
-
-    function stopSensors() {
-        if (_sensorTimer !== null) { clearInterval(_sensorTimer); _sensorTimer = null; }
-    }
-
-    function setSensor(id, value, decimals) {
-        var el = document.getElementById(id);
-        if (!el) { return; }
-        el.textContent = (value === null || value === undefined) ? 'N/A' : (typeof value === 'number' ? value.toFixed(decimals) : String(value));
-    }
-
-    function fetchSensors() {
-        fetch('/api/sensors').then(function(r) { return r.json(); }).then(function(d) {
-            setSensor('s-dist', d.distance_cm, 1);
-            setSensor('s-light-pct', d.light_percent, 0);
-            setSensor('s-light-v', d.light_voltage, 2);
-            setSensor('s-light-raw', d.light_raw, 0);
-            setSensor('s-ax', d.accel_x_g, 3);
-            setSensor('s-ay', d.accel_y_g, 3);
-            setSensor('s-az', d.accel_z_g, 3);
-            setSensor('s-gx', d.gyro_x_dps, 1);
-            setSensor('s-gy', d.gyro_y_dps, 1);
-            setSensor('s-gz', d.gyro_z_dps, 1);
-            setSensor('s-temp', d.temp_c, 1);
-        }).catch(function() {});
-    }
-
-    var _teleTimer = null;
-
-    function startTelemetry() {
-        if (_teleTimer !== null) { return; }
-        fetchTelemetry();
-        _teleTimer = setInterval(fetchTelemetry, 30000);
-    }
-
-    function stopTelemetry() {
-        if (_teleTimer !== null) { clearInterval(_teleTimer); _teleTimer = null; }
-    }
-
-    function _fmtTime(iso) {
-        if (!iso) { return '-'; }
-        var d = new Date(iso);
-        if (isNaN(d.getTime())) { return iso; }
-        var pad = function(n) { return n < 10 ? '0' + n : String(n); };
-        return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
-    }
-
-    function _fmtVal(v, dec) {
-        if (v === null || v === undefined || v === '') { return '-'; }
-        var n = parseFloat(v);
-        return isNaN(n) ? '-' : n.toFixed(dec);
-    }
-
-    function fetchTelemetry() {
-        var status = document.getElementById('tele-status');
-        if (status) { status.textContent = 'Fetching...'; }
-        var url = 'https://api.thingspeak.com/channels/' + _tsChannelId
-                + '/feeds.json?api_key=' + _tsReadKey + '&results=20';
-        fetch(url)
-            .then(function(r) {
-                if (!r.ok) { throw new Error('HTTP ' + r.status); }
-                return r.json();
-            })
-            .then(function(data) {
-                var feeds = (data && data.feeds) ? data.feeds : [];
-                var tbody = document.getElementById('tele-tbody');
-                if (!tbody) { return; }
-                if (feeds.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan=\"7\" style=\"color:#94a3b8\">No data yet</td></tr>';
-                } else {
-                    var rows = '';
-                    for (var i = feeds.length - 1; i >= 0; i--) {
-                        var f = feeds[i];
-                        rows += '<tr>'
-                            + '<td>' + _fmtTime(f.created_at) + '</td>'
-                            + '<td>' + _fmtVal(f.field1, 1) + '</td>'
-                            + '<td>' + _fmtVal(f.field2, 0) + '</td>'
-                            + '<td>' + _fmtVal(f.field3, 3) + '</td>'
-                            + '<td>' + _fmtVal(f.field4, 3) + '</td>'
-                            + '<td>' + _fmtVal(f.field5, 3) + '</td>'
-                            + '<td>' + _fmtVal(f.field6, 1) + '</td>'
-                            + '</tr>';
-                    }
-                    tbody.innerHTML = rows;
-                }
-                var now = new Date();
-                if (status) { status.textContent = 'Updated at ' + now.toLocaleTimeString(); }
-            })
-            .catch(function(err) {
-                var tbody = document.getElementById('tele-tbody');
-                if (tbody) {
-                    tbody.innerHTML = '<tr><td colspan=\"7\" style=\"color:#dc2626\">Error: ' + err.message + '</td></tr>';
-                }
-                if (status) { status.textContent = 'Fetch failed'; }
-            });
-    }
-</script>
-</body>
-</html>
-"""
+def _stream_html(path: str):
+    """Stream an HTML file from the filesystem in 1024-byte chunks.
+    Only one chunk is in RAM at a time — the file itself stays on flash."""
+    try:
+        with open(path) as f:
+            while True:
+                chunk = f.read(1024)
+                if not chunk:
+                    break
+                yield chunk
+    except OSError as exc:
+        yield "<p>Page load error: " + str(exc) + "</p>"
 
 
 @app.route("/")
@@ -1202,7 +733,7 @@ async def index(_request):
     ensure_leds_mode()
     set_mode(MODE_WAITING)
     screen_status("Web UI", "Connected", "")
-    return Response(render_webpage())
+    return Response(_stream_html("webpage/templates/main.html"))
 
 
 @app.route("/wifi_setup", methods=["POST"])
@@ -1229,7 +760,6 @@ async def wifi_setup_route(request):
 @app.route("/api/scan_wifi")
 async def api_scan_wifi(_request):
     """Scan for available WiFi networks and return them as JSON."""
-    import ujson
     if WIFI_MODE != "setup":
         return Response('[]', headers={"Content-Type": "application/json"})
     networks = _scan_wifi()
@@ -1245,7 +775,7 @@ async def set_led(request):
     state["led"] = requested_state
     apply_led_state(requested_state)
     screen_status("LEDS", requested_state, "")
-    return Response(render_webpage())
+    return "ok"
 
 
 @app.route("/move", methods=["POST"])
@@ -1254,7 +784,7 @@ async def move(request):
     ensure_motor_mode()
     direction: str = request.form.get("direction", "stop")
     apply_motor_direction(direction)
-    return Response(render_webpage())
+    return "ok"
 
 
 @app.route("/api/move", methods=["POST"])
@@ -1303,6 +833,32 @@ async def api_drive(request):
     return "ok"
 
 
+@app.route("/api/state")
+async def api_state(_request):
+    """Return all robot state needed by the static HTML page on first load."""
+    payload = ujson.dumps({
+        "motor": state["motor"],
+        "max_speed": state["max_speed"],
+        "mode": state["mode"],
+        "led": state["led"],
+        "song": state["song"],
+        "screen": state["screen"],
+        "songs": song_titles,
+        "ts_read_key": THINGSPEAK_READ_API_KEY,
+        "ts_channel_id": THINGSPEAK_CHANNEL_ID,
+        "ts_enabled": _ts_enabled,
+    })
+    return Response(payload, headers={"Content-Type": "application/json"})
+
+
+@app.route("/api/thingspeak", methods=["POST"])
+async def api_thingspeak_toggle(request):
+    global _ts_enabled
+    _ts_enabled = request.form.get("enabled", "0") == "1"
+    return Response(ujson.dumps({"enabled": _ts_enabled}),
+                    headers={"Content-Type": "application/json"})
+
+
 @app.route("/api/sensors")
 async def api_sensors(_request):
     """Return a JSON snapshot of all available sensors."""
@@ -1349,7 +905,6 @@ async def api_sensors(_request):
     def _r(v, n):
         return round(v, n) if v is not None else None
 
-    import ujson
     payload = ujson.dumps({
         "distance_cm": _r(dist_cm, 1),
         "light_percent": _r(light_pct, 0),
@@ -1378,7 +933,7 @@ async def set_max_speed(request):
 
     state["max_speed"] = str(max_speed)
     screen_status("Motors", "Max speed", str(max_speed))
-    return Response(render_webpage())
+    return "ok"
 
 
 @app.route("/play_song", methods=["POST"])
@@ -1401,7 +956,7 @@ async def play_song(request):
     set_mode(MODE_BUZZER)
     screen_status("Music", "Playing", state["song"][:16])
     asyncio.create_task(playsong_async(selected_song))
-    return Response(render_webpage())
+    return "ok"
 
 
 @app.route("/stop_song", methods=["POST"])
@@ -1411,7 +966,7 @@ async def stop_song_route(_request):
     state["song"] = "stopped"
     set_mode(MODE_WAITING)
     screen_status("Music", "Stopped", "web")
-    return Response(render_webpage())
+    return "ok"
 
 
 @app.route("/stop_motors", methods=["POST"])
@@ -1421,7 +976,7 @@ async def stop_motors(_request):
     set_mode(MODE_WAITING)
     state["motor"] = "stopped"
     screen_status("Motors", "Emergency", "stop")
-    return Response(render_webpage())
+    return "ok"
 
 
 @app.route("/set_screen", methods=["POST"])
@@ -1437,7 +992,7 @@ async def set_screen(request):
     if state["screen"] == "":
         state["screen"] = "custom"
     set_mode(MODE_WAITING)
-    return Response(render_webpage())
+    return "ok"
 
 
 _init_thingspeak()
