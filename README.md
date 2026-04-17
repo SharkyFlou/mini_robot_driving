@@ -115,7 +115,7 @@ Control the robot's movement using an **analog joystick** (drag with mouse or to
 
 ### Misc tab
 
-**Serial LEDs** — Set all 3 NeoPixels to one of 8 preset colors: Off, White, Red, Green, Blue, Yellow, Purple, Cyan.
+**Serial LEDs** — Set all 3 NeoPixels to one of 8 preset colors: Off, White, Red, Green, Blue, Yellow, Purple, Cyan. The **Rainbow** button slowly cycles through the full RGB spectrum (one complete cycle ≈ 6 s) until another color is selected.
 
 **Music** — Select a song from the list and click **Play selected song**. The buzzer plays the melody asynchronously (the robot remains controllable during playback). A physical button on the robot also stops the music. Available songs (42 total):
 

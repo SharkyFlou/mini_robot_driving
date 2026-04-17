@@ -20,6 +20,7 @@
     .purple { background: #9333ea; }
     .cyan { background: #0891b2; }
     .white { background: #6b7280; }
+    .rainbow { background: linear-gradient(90deg,#ef4444,#f97316,#eab308,#22c55e,#3b82f6,#8b5cf6,#ec4899); color: #fff; width: 100%; margin-top: 10px; }
     .danger { background: #b91c1c; width: 100%; margin-top: 10px; }
     .motor-wrap { display: flex; gap: 20px; align-items: center; justify-content: center; flex-wrap: wrap; }
     .joystick-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
@@ -127,6 +128,7 @@
         <form action="/set_led" method="post"><input type="hidden" name="state" value="purple"><button class="purple" type="submit">Purple</button></form>
         <form action="/set_led" method="post"><input type="hidden" name="state" value="cyan"><button class="cyan" type="submit">Cyan</button></form>
       </div>
+      <form action="/set_led" method="post"><input type="hidden" name="state" value="rainbow"><button class="rainbow" type="submit">Rainbow</button></form>
       <p class="section-title">Music control</p>
       <form action="/play_song" method="post">
         <label for="song_index">Choose a song</label>

@@ -488,10 +488,44 @@ def _ensure_thingspeak_task() -> None:
     _thingspeak_task_started = True
 
 
+def _hsv_to_rgb(h: int, s: float, v: float) -> tuple:
+    """Convert HSV (h: 0-359, s/v: 0.0-1.0) to an (r, g, b) tuple of 0-255 ints."""
+    h = h % 360
+    i = h // 60
+    f = (h / 60.0) - i
+    p = int(v * (1.0 - s) * 255)
+    q = int(v * (1.0 - s * f) * 255)
+    t = int(v * (1.0 - s * (1.0 - f)) * 255)
+    vi = int(v * 255)
+    if i == 0: return vi, t, p
+    if i == 1: return q, vi, p
+    if i == 2: return p, vi, t
+    if i == 3: return p, q, vi
+    if i == 4: return t, p, vi
+    return vi, p, q
+
+
+async def _rainbow_loop() -> None:
+    """Slowly cycle serial LEDs through all hues until the LED state changes."""
+    hue = 0
+    while state["led"] == "rainbow":
+        serial_leds = hardware["serial_leds"]
+        if serial_leds is not None:
+            r, g, b = _hsv_to_rgb(hue, 1.0, 0.5)
+            serial_leds.set_color_for_all(r, g, b)
+            serial_leds.send_setting()
+        hue = (hue + 1) % 360
+        await asyncio.sleep_ms(15)
+
+
 def apply_led_state(led_state: str) -> None:
     """Apply one named serial LED strip color preset."""
     serial_leds = hardware["serial_leds"]
     if serial_leds is None:
+        return
+
+    if led_state == "rainbow":
+        asyncio.create_task(_rainbow_loop())
         return
 
     if led_state == "red":
