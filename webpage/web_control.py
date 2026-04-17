@@ -22,6 +22,8 @@ DEFAULT_MAX_SPEED: int = 220
 # ThingSpeak — only active in station mode (robot connected to external WiFi).
 # field1=distance_cm  field2=light_%  field3=accel_x  field4=accel_y  field5=accel_z  field6=temp_c
 THINGSPEAK_WRITE_API_KEY: str = "J5D4CNVPH82HT6DM"
+THINGSPEAK_READ_API_KEY: str = "KJ1WAN2QZ1VT9Q4L"
+THINGSPEAK_CHANNEL_ID: str = "3334331"
 THINGSPEAK_INTERVAL_S: int = 30  # free plan minimum: 15 s
 
 MODE_LOADING = "loading"
@@ -762,6 +764,12 @@ def render_webpage():
     .sensor-label { font-size: 12px; color: #64748b; margin-bottom: 4px; }
     .sensor-value { font-size: 20px; font-weight: bold; color: #1e40af; }
     .sensor-unit { font-size: 12px; color: #94a3b8; }
+    .tele-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+    .tele-table th { background: #e2e8f0; padding: 5px 3px; text-align: center; color: #374151; font-size: 10px; }
+    .tele-table td { padding: 4px 3px; text-align: center; border-bottom: 1px solid #f1f5f9; color: #1e40af; }
+    .tele-table tr:last-child td { border-bottom: none; }
+    .tele-refresh-btn { margin-top: 8px; background: #0f766e; width: 100%; }
+    .tele-status { font-size: 12px; color: #64748b; margin: 6px 0 0 0; text-align: center; min-height: 16px; }
   </style>
 </head>
 <body>
@@ -771,6 +779,7 @@ def render_webpage():
       <button class=\"tab-btn active\" id=\"tab-motors\" onclick=\"showTab('motors')\">Motors</button>
       <button class=\"tab-btn\" id=\"tab-misc\" onclick=\"showTab('misc')\">Misc</button>
       <button class=\"tab-btn\" id=\"tab-sensors\" onclick=\"showTab('sensors')\">Sensors</button>
+      <button class=\"tab-btn\" id=\"tab-telemetry\" onclick=\"showTab('telemetry')\">Telemetry</button>
     </div>
     <div id=\"pane-motors\">
     <p class=\"state\">Motors: """
@@ -919,7 +928,34 @@ def render_webpage():
         </div>
       </div>
     </div>
+    <div id=\"pane-telemetry\" style=\"display:none\">
+      <p style=\"font-size:13px;color:#475569;margin:0 0 8px 0\">Last 20 entries sent to ThingSpeak (auto-refresh every 30 s)</p>
+      <div style=\"overflow-x:auto\">
+        <table class=\"tele-table\">
+          <thead><tr>
+            <th>Time</th>
+            <th>Dist (cm)</th>
+            <th>Light (%)</th>
+            <th>Acc X (g)</th>
+            <th>Acc Y (g)</th>
+            <th>Acc Z (g)</th>
+            <th>Temp (&deg;C)</th>
+          </tr></thead>
+          <tbody id=\"tele-tbody\"><tr><td colspan=\"7\" style=\"color:#94a3b8\">Loading...</td></tr></tbody>
+        </table>
+      </div>
+      <button class=\"tele-refresh-btn\" type=\"button\" onclick=\"fetchTelemetry()\">Refresh now</button>
+      <p class=\"tele-status\" id=\"tele-status\"></p>
+    </div>
   </div>
+<script>
+    var _tsReadKey = '"""
+    yield THINGSPEAK_READ_API_KEY
+    yield """';
+    var _tsChannelId = '"""
+    yield THINGSPEAK_CHANNEL_ID
+    yield """';
+</script>
 <script>
     (function() {
         const base = document.getElementById('joystick_base');
@@ -1038,11 +1074,12 @@ def render_webpage():
     })();
 
     function showTab(name) {
-        ['motors', 'misc', 'sensors'].forEach(function(t) {
+        ['motors', 'misc', 'sensors', 'telemetry'].forEach(function(t) {
             document.getElementById('pane-' + t).style.display = name === t ? '' : 'none';
             document.getElementById('tab-' + t).className = 'tab-btn' + (name === t ? ' active' : '');
         });
         if (name === 'sensors') { startSensors(); } else { stopSensors(); }
+        if (name === 'telemetry') { startTelemetry(); } else { stopTelemetry(); }
         try { localStorage.setItem('active-tab', name); } catch(_) {}
     }
     (function() { var t = localStorage.getItem('active-tab'); if (t) { showTab(t); } })();
@@ -1079,6 +1116,76 @@ def render_webpage():
             setSensor('s-gz', d.gyro_z_dps, 1);
             setSensor('s-temp', d.temp_c, 1);
         }).catch(function() {});
+    }
+
+    var _teleTimer = null;
+
+    function startTelemetry() {
+        if (_teleTimer !== null) { return; }
+        fetchTelemetry();
+        _teleTimer = setInterval(fetchTelemetry, 30000);
+    }
+
+    function stopTelemetry() {
+        if (_teleTimer !== null) { clearInterval(_teleTimer); _teleTimer = null; }
+    }
+
+    function _fmtTime(iso) {
+        if (!iso) { return '-'; }
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) { return iso; }
+        var pad = function(n) { return n < 10 ? '0' + n : String(n); };
+        return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+
+    function _fmtVal(v, dec) {
+        if (v === null || v === undefined || v === '') { return '-'; }
+        var n = parseFloat(v);
+        return isNaN(n) ? '-' : n.toFixed(dec);
+    }
+
+    function fetchTelemetry() {
+        var status = document.getElementById('tele-status');
+        if (status) { status.textContent = 'Fetching...'; }
+        var url = 'https://api.thingspeak.com/channels/' + _tsChannelId
+                + '/feeds.json?api_key=' + _tsReadKey + '&results=20';
+        fetch(url)
+            .then(function(r) {
+                if (!r.ok) { throw new Error('HTTP ' + r.status); }
+                return r.json();
+            })
+            .then(function(data) {
+                var feeds = (data && data.feeds) ? data.feeds : [];
+                var tbody = document.getElementById('tele-tbody');
+                if (!tbody) { return; }
+                if (feeds.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan=\"7\" style=\"color:#94a3b8\">No data yet</td></tr>';
+                } else {
+                    var rows = '';
+                    for (var i = feeds.length - 1; i >= 0; i--) {
+                        var f = feeds[i];
+                        rows += '<tr>'
+                            + '<td>' + _fmtTime(f.created_at) + '</td>'
+                            + '<td>' + _fmtVal(f.field1, 1) + '</td>'
+                            + '<td>' + _fmtVal(f.field2, 0) + '</td>'
+                            + '<td>' + _fmtVal(f.field3, 3) + '</td>'
+                            + '<td>' + _fmtVal(f.field4, 3) + '</td>'
+                            + '<td>' + _fmtVal(f.field5, 3) + '</td>'
+                            + '<td>' + _fmtVal(f.field6, 1) + '</td>'
+                            + '</tr>';
+                    }
+                    tbody.innerHTML = rows;
+                }
+                var now = new Date();
+                if (status) { status.textContent = 'Updated at ' + now.toLocaleTimeString(); }
+            })
+            .catch(function(err) {
+                var tbody = document.getElementById('tele-tbody');
+                if (tbody) {
+                    tbody.innerHTML = '<tr><td colspan=\"7\" style=\"color:#dc2626\">Error: ' + err.message + '</td></tr>';
+                }
+                if (status) { status.textContent = 'Fetch failed'; }
+            });
     }
 </script>
 </body>
